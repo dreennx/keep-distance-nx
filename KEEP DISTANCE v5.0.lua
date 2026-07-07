@@ -1,5 +1,14 @@
 -- ═══════════════════════════════════════════════════════════
--- KEEP DISTANCE v5.5 · Panel Glass Premium + BLINDAJE anti-ataques
+-- KEEP DISTANCE v6.5 · Panel Glass Premium + BLINDAJE anti-ataques
+-- ★ FIX RAÍZ v6.5: el ScreenGui estaba en ZIndexBehavior=Global → el panel
+--   (ZIndex 2) TAPABA todo el contenido (ZIndex 1: textos, tarjetas, slider);
+--   solo asomaban perillas (Z2) y el badge (Z3). ESTO explica todo desde v5.5:
+--   panel opaco = contenido invisible; panel translúcido = texto "borroso" que
+--   en realidad se asomaba POR DETRÁS. Ahora ZIndexBehavior=Sibling → los hijos
+--   van SIEMPRE delante del padre. Todo visible. Se pudo devolver vidrio sutil.
+-- FIX v6.4: tarjetas más claras (48,54,76), tracks visibles, base opaca.
+-- FIX v6.3: estructuras a COLOR SÓLIDO (fuera bug "multiply" de UIGradient) +
+--   se quitó el barrido de brillo del badge (rayón que parecía glitch).
 -- CEREBRO DE ESCAPE: elige la mejor RUTA en vez de solo empujar:
 --   anti-flanqueo (ya no se congela si te rodean) · esquiva paredes
 --   anti-zigzag · anti-atasco · histéresis (no titubea en el borde)
@@ -161,27 +170,35 @@ local SMART = {
 -- el invite igual queda copiado en el portapapeles como red de seguridad.
 local DISCORD_INVITE = "https://discord.gg/JgsW2M6322"   -- tu invite (se copia + abre en la app)
 
--- ════════════ PALETA (glass oscuro premium) ════════════
+-- ════════════ PALETA (glass premium · vidrio translúcido) ════════════
 local C = {
-    BG      = Color3.fromRGB(14, 15, 20),
-    SURFACE = Color3.fromRGB(22, 24, 32),
-    ROW     = Color3.fromRGB(28, 31, 42),
-    ROW_HOV = Color3.fromRGB(36, 40, 54),
-    ACCENT  = Color3.fromRGB(0, 150, 255),
-    TEXT_HI = Color3.fromRGB(232, 236, 250),
-    TEXT_LO = Color3.fromRGB(120, 128, 158),
-    WHITE   = Color3.fromRGB(255, 255, 255),
-    ON      = Color3.fromRGB(0, 200, 100),
-    OFF     = Color3.fromRGB(50, 50, 55),
+    BG       = Color3.fromRGB(18, 21, 31),
+    SURFACE  = Color3.fromRGB(26, 29, 40),
+    ROW      = Color3.fromRGB(48, 54, 76),      -- tarjeta CLARA: resalta sobre el panel y el texto blanco pega
+    ROW_HOV  = Color3.fromRGB(64, 72, 98),
+    ACCENT   = Color3.fromRGB(56, 158, 255),   -- azul cristal premium
+    ACCENT_2 = Color3.fromRGB(126, 208, 255),  -- highlight claro del acento
+    TEXT_HI  = Color3.fromRGB(238, 242, 255),
+    TEXT_MID = Color3.fromRGB(168, 178, 208),
+    TEXT_LO  = Color3.fromRGB(118, 128, 158),
+    WHITE    = Color3.fromRGB(255, 255, 255),
+    ON       = Color3.fromRGB(48, 214, 132),   -- verde menta premium
+    ON_GLOW  = Color3.fromRGB(120, 240, 178),
+    OFF      = Color3.fromRGB(78, 84, 106),   -- track apagado VISIBLE sobre la tarjeta
+    DISABLED = Color3.fromRGB(70, 74, 90),      -- estado deshabilitado (texto/track apagado)
 }
 
 local DUR_FAST = 0.12
 local DUR_MED  = 0.20
-local DUR_SLOW = 0.30
+local DUR_SLOW = 0.34
+
+local EASE_GLASS = Enum.EasingStyle.Quint   -- fluido, sin rebote (movimiento de ventana)
+local EASE_POP   = Enum.EasingStyle.Back    -- micro-rebote (feedback de estado)
+local EASE_SOFT  = Enum.EasingStyle.Sine    -- respiración / glow
 
 local function tw(o, props, dur, style, dir)
     local t = TweenService:Create(o,
-        TweenInfo.new(dur or DUR_MED, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+        TweenInfo.new(dur or DUR_MED, style or EASE_GLASS, dir or Enum.EasingDirection.Out), props)
     t:Play(); return t
 end
 local function corner(p, r)
@@ -189,19 +206,47 @@ local function corner(p, r)
 end
 local function stroke(p, transp, thick, col)
     local s = Instance.new("UIStroke")
-    s.Color = col or C.WHITE; s.Transparency = transp or 0.85; s.Thickness = thick or 1; s.Parent = p
+    s.Color = col or C.WHITE; s.Transparency = transp or 0.85; s.Thickness = thick or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = p
     return s
 end
--- Fondo glass premium: navy profundo arriba -> casi negro abajo (sólido, sin lavado)
-local function glassGrad(p)
-    local g = Instance.new("UIGradient", p)
-    g.Rotation = 90
-    g.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0,    Color3.fromRGB(34, 38, 56)),
-        ColorSequenceKeypoint.new(0.55, Color3.fromRGB(20, 22, 32)),
-        ColorSequenceKeypoint.new(1,    Color3.fromRGB(11, 12, 18)),
+-- Borde con degradado tipo cristal (claro arriba -> oscuro abajo). Simula el reflejo del vidrio.
+-- FIX v6.2: la base del stroke SIEMPRE en blanco — el UIGradient multiplica su color
+-- por el color base, así el degradado pinta sus colores reales (antes se doble-oscurecía).
+local function glassStroke(p, transp, thick, top, bottom)
+    local s = stroke(p, transp, thick, C.WHITE)
+    local g = Instance.new("UIGradient", s)
+    g.Rotation = 90   -- vertical: canto de luz arriba, sombra abajo
+    g.Color = ColorSequence.new(top or Color3.fromRGB(190, 205, 235), bottom or Color3.fromRGB(40, 46, 66))
+    return s, g
+end
+-- Reflejo especular: línea/banda blanca translúcida (el "brillo" del cristal).
+local function addSpecular(parent, y, h, transp)
+    local s = Instance.new("Frame")
+    s.Size                   = UDim2.new(1, -16, 0, h or 1)
+    s.Position               = UDim2.new(0, 8, 0, y or 1)
+    s.BackgroundColor3       = C.WHITE
+    s.BackgroundTransparency = transp or 0.55
+    s.BorderSizePixel        = 0
+    s.Active                 = false
+    s.Parent                 = parent
+    corner(s, math.floor((h or 1) / 2))
+    local g = Instance.new("UIGradient", s)   -- se desvanece en los bordes (no una línea dura)
+    g.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0,    1.0),
+        NumberSequenceKeypoint.new(0.5,  0.0),
+        NumberSequenceKeypoint.new(1,    1.0),
     })
-    return g
+    return s
+end
+-- Fondo del panel: navy SÓLIDO (sin gradiente de color) para máxima legibilidad.
+-- La profundidad la dan topGlow + specular + borde cristal, no un gradiente que
+-- oscurezca el fondo. FIX v6.3: se quitó el gradiente de color (fuente de los
+-- bugs de "multiply"); el color ahora es exacto y las tarjetas resaltan.
+local function glassGrad(p)
+    p.BackgroundColor3 = C.BG
+    return nil
 end
 
 local function getRoot()
@@ -610,7 +655,7 @@ local function ensureLoops()
 end
 
 -- ═══════════════════════════════════════════════════════════
--- UI v5.1 · sistema de componentes (encapsulado en buildUI para reconstruir)
+-- UI v6.5 · sistema de componentes (encapsulado en buildUI para reconstruir)
 -- ═══════════════════════════════════════════════════════════
 local UI = {}   -- referencias estables entre reconstrucciones (setMode/setAnchor/sync...)
 
@@ -657,6 +702,10 @@ buildUI = function(firstBuild)
     gui.Name           = GUI_NAME
     gui.ResetOnSpawn   = false
     gui.IgnoreGuiInset = true
+    -- ★ FIX RAÍZ v6.5: sin esto el executor deja el GUI en ZIndexBehavior=Global,
+    -- donde el panel (ZIndex 2) TAPA todo el contenido (ZIndex 1: textos, tarjetas,
+    -- slider). Con Sibling los hijos SIEMPRE van delante de su padre → todo se ve.
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui:SetAttribute("KD", true)      -- huella para que un re-exec lo encuentre aunque el nombre sea aleatorio
     protectGui(gui)
     gui.Parent         = getParent()
@@ -691,42 +740,94 @@ buildUI = function(firstBuild)
     local BODY_H     = 330
     local FULL_H     = HEAD_H + BODY_H
 
+    -- ── sombra neutra (separa la ventana del mundo · da profundidad de app) ──
+    local panelShadow = Instance.new("Frame", gui)
+    panelShadow.Size                   = UDim2.new(0, W + 36, 0, FULL_H + 40)
+    panelShadow.Position               = UDim2.new(0, 60 - 18, 0, 120 - 14)
+    panelShadow.BackgroundColor3       = Color3.fromRGB(0, 0, 0)
+    panelShadow.BackgroundTransparency = 0.35
+    panelShadow.BorderSizePixel        = 0
+    panelShadow.ZIndex                 = 0
+    panelShadow.Active                 = false
+    corner(panelShadow, 26)
+    do
+        local sg = Instance.new("UIGradient", panelShadow)
+        sg.Rotation = 90
+        sg.Transparency = NumberSequence.new({   -- se difumina hacia los bordes (falso blur)
+            NumberSequenceKeypoint.new(0,   0.55),
+            NumberSequenceKeypoint.new(0.5, 0.30),
+            NumberSequenceKeypoint.new(1,   0.75),
+        })
+    end
+
+    -- ── halo de acento exterior (glow azul del borde · detrás del panel) ──
+    local panelGlow = Instance.new("Frame", gui)
+    panelGlow.Size                   = UDim2.new(0, W + 20, 0, FULL_H + 20)
+    panelGlow.Position               = UDim2.new(0, 60 - 10, 0, 120 - 10)
+    panelGlow.BackgroundColor3       = C.ACCENT
+    panelGlow.BackgroundTransparency = 0.72
+    panelGlow.BorderSizePixel        = 0
+    panelGlow.ZIndex                 = 1
+    panelGlow.Active                 = false
+    corner(panelGlow, 22)
+    do
+        local gg = Instance.new("UIGradient", panelGlow)
+        gg.Rotation = 90
+        gg.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0,   0.55),
+            NumberSequenceKeypoint.new(0.5, 0.80),
+            NumberSequenceKeypoint.new(1,   0.62),
+        })
+    end
+
     local panel = Instance.new("Frame")
     panel.Size                   = UDim2.new(0, W, 0, FULL_H)
     panel.Position               = UDim2.new(0, 60, 0, 120)
     panel.BackgroundColor3       = C.BG
-    panel.BackgroundTransparency = 0.04
+    panel.BackgroundTransparency = 0.05   -- vidrio sutil (el contenido va DELANTE, así que no se lava)
     panel.BorderSizePixel        = 0
     panel.ClipsDescendants       = true
+    panel.ZIndex                 = 2
     panel.Parent                 = gui
-    corner(panel, 16)
-    stroke(panel, 0.55, 1.2)
-    glassGrad(panel)
+    corner(panel, 18)
+    do  -- borde cristal: más brillante arriba => canto de luz nítido
+        local _, sg = glassStroke(panel, 0.15, 1.6,
+            Color3.fromRGB(150, 200, 255), Color3.fromRGB(30, 40, 62))
+        sg.Rotation = 90
+    end
+    glassGrad(panel)   -- FIX v6.2: pone la base en blanco → el navy del gradiente se ve REAL
 
-    -- glow de acento superior (premium)
+    -- las capas detrás siguen al panel cuando lo arrastras / minimizas
+    trackUI(panel:GetPropertyChangedSignal("Position"):Connect(function()
+        local px, py = panel.Position.X.Offset, panel.Position.Y.Offset
+        panelGlow.Position   = UDim2.new(0, px - 10, 0, py - 10)
+        panelShadow.Position = UDim2.new(0, px - 18, 0, py - 14)
+    end))
+    trackUI(panel:GetPropertyChangedSignal("Size"):Connect(function()
+        local sx, sy = panel.Size.X.Offset, panel.Size.Y.Offset
+        panelGlow.Size   = UDim2.new(0, sx + 20, 0, sy + 20)
+        panelShadow.Size = UDim2.new(0, sx + 36, 0, sy + 40)
+    end))
+
+    -- glow de acento superior (baña el header en luz azul · premium)
     local topGlow = Instance.new("Frame", panel)
-    topGlow.Size                   = UDim2.new(1, 0, 0, 64)
+    topGlow.Size                   = UDim2.new(1, 0, 0, 78)
     topGlow.Position               = UDim2.new(0, 0, 0, 0)
     topGlow.BackgroundColor3       = C.ACCENT
     topGlow.BorderSizePixel        = 0
     topGlow.ZIndex                 = 0
+    topGlow.Active                 = false
     do
         local gg = Instance.new("UIGradient", topGlow)
         gg.Rotation = 90
         gg.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.80),
+            NumberSequenceKeypoint.new(0, 0.72),
             NumberSequenceKeypoint.new(1, 1.00),
         })
     end
 
-    -- brillo especular superior
-    local spec = Instance.new("Frame", panel)
-    spec.Size                   = UDim2.new(1, -16, 0, 1)
-    spec.Position               = UDim2.new(0, 8, 0, 1)
-    spec.BackgroundColor3       = C.WHITE
-    spec.BackgroundTransparency = 0.4
-    spec.BorderSizePixel        = 0
-    corner(spec, 1)
+    -- brillo especular superior (el filo de luz del cristal)
+    addSpecular(panel, 1, 1, 0.35)
 
     -- ════════════ HEADER ════════════
     local header = Instance.new("Frame", panel)
@@ -781,12 +882,14 @@ buildUI = function(firstBuild)
     end
 
     -- fondo glass con gradiente moderno (navy premium)
+    -- FIX v6.2: base BLANCA → el gradiente navy se ve real (antes: navy × navy = negro)
     local nxFill = Instance.new("Frame", nxWrap)
     nxFill.Size                   = UDim2.new(1, 0, 1, 0)
-    nxFill.BackgroundColor3       = C.SURFACE
+    nxFill.BackgroundColor3       = C.WHITE
     nxFill.BackgroundTransparency = 0.04
     nxFill.BorderSizePixel        = 0
     nxFill.ZIndex                 = 2
+    nxFill.ClipsDescendants       = true   -- recorta el barrido de brillo dentro del badge
     corner(nxFill, 9)
     do
         local bg = Instance.new("UIGradient", nxFill)
@@ -796,8 +899,9 @@ buildUI = function(firstBuild)
             ColorSequenceKeypoint.new(1, Color3.fromRGB(13, 18, 30)),
         })
     end
-    -- UIStroke con degradado (borde premium)
-    local nxStroke = stroke(nxFill, 0.2, 1.4, C.ACCENT)
+
+    -- UIStroke con degradado (borde premium) · base blanca, el gradiente pone el azul
+    local nxStroke = stroke(nxFill, 0.2, 1.4, C.WHITE)
     do
         local sg = Instance.new("UIGradient", nxStroke)
         sg.Rotation = 90
@@ -837,48 +941,58 @@ buildUI = function(firstBuild)
     local nxHover = false
     task.spawn(function()
         while not _dead and _gui == gui do
-            if not nxHover then tw(nxGlow, { BackgroundTransparency = 0.6 }, 1.1, Enum.EasingStyle.Sine) end
+            if not nxHover then tw(nxGlow, { BackgroundTransparency = 0.6 }, 1.1, EASE_SOFT) end
             task.wait(1.2)
             if _dead or _gui ~= gui then break end
-            if not nxHover then tw(nxGlow, { BackgroundTransparency = 0.82 }, 1.1, Enum.EasingStyle.Sine) end
+            if not nxHover then tw(nxGlow, { BackgroundTransparency = 0.82 }, 1.1, EASE_SOFT) end
             task.wait(1.2)
         end
     end)
 
-    -- botón minimizar
+    -- botón minimizar (glass)
     local minBtn = Instance.new("TextButton", header)
     minBtn.Size                   = UDim2.new(0, 28, 0, 28)
     minBtn.Position               = UDim2.new(1, -36, 0.5, -14)
     minBtn.BackgroundColor3       = C.ROW
-    minBtn.BackgroundTransparency = 0.35
+    minBtn.BackgroundTransparency = 0.45
     minBtn.BorderSizePixel        = 0
     minBtn.Text                   = "—"
     minBtn.TextColor3             = C.TEXT_HI
     minBtn.Font                   = Enum.Font.GothamBold
     minBtn.TextSize               = 15
     minBtn.AutoButtonColor        = false
-    corner(minBtn, 8)
-    stroke(minBtn, 0.85)
+    corner(minBtn, 9)
+    glassStroke(minBtn, 0.7, 1)
 
     local hLine = Instance.new("Frame", panel)
     hLine.Size                   = UDim2.new(1, -2 * PAD, 0, 1)
     hLine.Position               = UDim2.new(0, PAD, 0, HEAD_H - 1)
     hLine.BackgroundColor3       = C.WHITE
-    hLine.BackgroundTransparency = 0.88
+    hLine.BackgroundTransparency = 0.82
     hLine.BorderSizePixel        = 0
+    do  -- separador minimalista: se desvanece en los extremos (no una línea dura)
+        local lg = Instance.new("UIGradient", hLine)
+        lg.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0,   1.0),
+            NumberSequenceKeypoint.new(0.5, 0.0),
+            NumberSequenceKeypoint.new(1,   1.0),
+        })
+    end
 
     -- drag por el header (smooth lerp · se bloquea si estamos arrastrando el slider)
     local _panelDrag = false   -- expuesto para que el slider lo bloquee
     do
         local dragStart, startPos = nil, nil
         local dragTargetX, dragTargetY = 0, 0
-        local DRAG_SMOOTH = 0.18   -- lerp factor (0 = pegajoso, 1 = directo)
+        local DRAG_SMOOTH = 0.22   -- lerp factor (0 = pegajoso, 1 = directo)
 
         trackUI(header.InputBegan:Connect(function(i)
             if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
                 _panelDrag = true; dragStart = i.Position; startPos = panel.Position
                 dragTargetX = startPos.X.Offset
                 dragTargetY = startPos.Y.Offset
+                -- feedback de "levantar la ventana": el halo se intensifica al agarrarla
+                tw(panelGlow, { BackgroundTransparency = 0.55 }, DUR_MED, EASE_SOFT)
             end
         end))
         trackUI(UserInputService.InputChanged:Connect(function(i)
@@ -890,22 +1004,28 @@ buildUI = function(firstBuild)
         end))
         trackUI(UserInputService.InputEnded:Connect(function(i)
             if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+                if _panelDrag then tw(panelGlow, { BackgroundTransparency = 0.72 }, DUR_SLOW, EASE_SOFT) end
                 _panelDrag = false
             end
         end))
 
+        -- FIX v6.2: el corte de "ya llegué" ahora mira X e Y (antes solo X:
+        -- arrastres verticales quedaban a medio camino al soltar)
         trackUI(RunService.RenderStepped:Connect(function()
-            if not _panelDrag and math.abs(panel.Position.X.Offset - dragTargetX) < 0.5 then return end
-            if not _panelDrag and not startPos then return end
+            if not startPos then return end
             local cx = panel.Position.X.Offset
             local cy = panel.Position.Y.Offset
+            if not _panelDrag
+               and math.abs(cx - dragTargetX) < 0.5
+               and math.abs(cy - dragTargetY) < 0.5 then
+                return
+            end
             local nx = cx + (dragTargetX - cx) * DRAG_SMOOTH
             local ny = cy + (dragTargetY - cy) * DRAG_SMOOTH
             if not _panelDrag and math.abs(nx - dragTargetX) < 0.5 and math.abs(ny - dragTargetY) < 0.5 then
                 nx, ny = dragTargetX, dragTargetY
             end
-            panel.Position = UDim2.new(startPos and startPos.X.Scale or 0, nx,
-                                        startPos and startPos.Y.Scale or 0, ny)
+            panel.Position = UDim2.new(startPos.X.Scale, nx, startPos.Y.Scale, ny)
         end))
     end
 
@@ -934,6 +1054,7 @@ buildUI = function(firstBuild)
         t.BackgroundColor3       = C.SURFACE
         t.BackgroundTransparency = 0.06
         t.BorderSizePixel        = 0
+        t.ZIndex                 = 60   -- Sibling: por encima del panel aunque se solapen
         corner(t, 11)
         stroke(t, 0.45, 1.2, ok and C.ON or C.ACCENT)
 
@@ -1010,14 +1131,21 @@ buildUI = function(firstBuild)
                      or  ("Discord: " .. DISCORD_INVITE), true)
     end
 
-    -- ── etiqueta de sección ──
+    -- ── etiqueta de sección (con tick de acento para jerarquía) ──
     local function sectionLabel(parent, text, posY)
+        local tick = Instance.new("Frame", parent)
+        tick.Size             = UDim2.new(0, 3, 0, 11)
+        tick.Position         = UDim2.new(0, PAD, 0, posY + 1)
+        tick.BackgroundColor3 = C.ACCENT
+        tick.BorderSizePixel  = 0
+        corner(tick, 2)
+
         local l = Instance.new("TextLabel", parent)
-        l.Size                   = UDim2.new(1, -2 * PAD, 0, 14)
-        l.Position               = UDim2.new(0, PAD, 0, posY)
+        l.Size                   = UDim2.new(1, -2 * PAD - 10, 0, 14)
+        l.Position               = UDim2.new(0, PAD + 10, 0, posY)
         l.BackgroundTransparency = 1
-        l.Text                   = text
-        l.TextColor3             = Color3.fromRGB(132, 168, 235)
+        l.Text                   = string.upper(text)
+        l.TextColor3             = Color3.fromRGB(170, 198, 255)   -- más brillante => contraste real
         l.Font                   = Enum.Font.GothamBold
         l.TextSize               = 11
         l.TextXAlignment         = Enum.TextXAlignment.Left
@@ -1028,20 +1156,19 @@ buildUI = function(firstBuild)
     -- Devuelve { row, setOn(state) }  ·  toda la fila es clickeable (touch 44px)
     local function makeSwitchRow(parent, title, subtitle, posY, onToggle)
         local row = Instance.new("TextButton", parent)
-        row.Size                   = UDim2.new(1, -2 * PAD, 0, 44)
+        row.Size                   = UDim2.new(1, -2 * PAD, 0, 46)
         row.Position               = UDim2.new(0, PAD, 0, posY)
+        -- FIX v6.3: color SÓLIDO (sin gradiente) → la tarjeta resalta clara sobre
+        -- el panel y el texto se lee sin esfuerzo. Nada de "multiply".
         row.BackgroundColor3       = C.ROW
-        row.BackgroundTransparency = 0.25
+        row.BackgroundTransparency = 0.0    -- OPACA: tarjeta nítida, sin lavado del fondo
         row.BorderSizePixel        = 0
         row.Text                   = ""
         row.AutoButtonColor        = false
-        corner(row, 10)
-        local rowStroke = stroke(row, 0.86)
-        do  -- UIStroke con degradado (borde glass premium)
-            local sg = Instance.new("UIGradient", rowStroke)
-            sg.Rotation = 90
-            sg.Color = ColorSequence.new(Color3.fromRGB(150, 170, 210), Color3.fromRGB(40, 48, 70))
-        end
+        row.AutoLocalize           = false
+        corner(row, 12)
+        local rowStroke = glassStroke(row, 0.6, 1.2)   -- borde cristal con degradado
+        addSpecular(row, 1, 1, 0.65)                     -- filo de luz superior
         local rowScale = Instance.new("UIScale", row); rowScale.Scale = 1
 
         local tl = Instance.new("TextLabel", row)
@@ -1051,7 +1178,7 @@ buildUI = function(firstBuild)
         tl.Text                   = title
         tl.TextColor3             = C.TEXT_HI
         tl.Font                   = Enum.Font.GothamBold
-        tl.TextSize               = 13
+        tl.TextSize               = 14
         tl.TextXAlignment         = Enum.TextXAlignment.Left
         tl.TextYAlignment         = Enum.TextYAlignment.Center
 
@@ -1059,12 +1186,12 @@ buildUI = function(firstBuild)
         if subtitle then
             subLabel = Instance.new("TextLabel", row)
             subLabel.Size                   = UDim2.new(1, -76, 0, 14)
-            subLabel.Position               = UDim2.new(0, 12, 0, 23)
+            subLabel.Position               = UDim2.new(0, 12, 0, 24)
             subLabel.BackgroundTransparency = 1
             subLabel.Text                   = subtitle
-            subLabel.TextColor3             = C.TEXT_LO
+            subLabel.TextColor3             = C.TEXT_MID   -- secundario legible (antes se perdía)
             subLabel.Font                   = Enum.Font.Gotham
-            subLabel.TextSize               = 10
+            subLabel.TextSize               = 11
             subLabel.TextXAlignment         = Enum.TextXAlignment.Left
         end
 
@@ -1076,49 +1203,74 @@ buildUI = function(firstBuild)
         trackSw.BorderSizePixel        = 0
         corner(trackSw, 12)
 
+        local trackGlow = Instance.new("UIStroke", trackSw)   -- halo del track cuando está ON
+        trackGlow.Color = C.ON_GLOW; trackGlow.Thickness = 6; trackGlow.Transparency = 1
+
         local knob = Instance.new("Frame", trackSw)
         knob.Size                   = UDim2.new(0, 18, 0, 18)
         knob.Position               = UDim2.new(0, 3, 0.5, -9)
         knob.BackgroundColor3       = C.WHITE
         knob.BorderSizePixel        = 0
+        knob.ZIndex                 = 2
         corner(knob, 9)
         local knobGlow = Instance.new("UIStroke", knob)   -- glow verde cuando está ON
-        knobGlow.Color = C.ON; knobGlow.Thickness = 5; knobGlow.Transparency = 1
+        knobGlow.Color = C.ON_GLOW; knobGlow.Thickness = 5; knobGlow.Transparency = 1
 
-        local state = false
+        local state    = false
+        local disabled = false
         local function setOn(on, instant)
             state = on
             local kPos = on and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
             local tCol = on and C.ON or C.OFF
             if instant then
                 knob.Position = kPos; trackSw.BackgroundColor3 = tCol
-                knobGlow.Transparency = on and 0.5 or 1
+                knobGlow.Transparency  = on and 0.45 or 1
+                trackGlow.Transparency = on and 0.55 or 1
             else
-                tw(knob, { Position = kPos }, DUR_MED, Enum.EasingStyle.Back)
+                tw(knob, { Position = kPos }, DUR_MED, EASE_POP)
                 tw(trackSw, { BackgroundColor3 = tCol }, DUR_FAST)
-                tw(knobGlow, { Transparency = on and 0.5 or 1 }, DUR_MED)
+                tw(knobGlow,  { Transparency = on and 0.45 or 1 }, DUR_MED)
+                tw(trackGlow, { Transparency = on and 0.55 or 1 }, DUR_MED)
             end
+        end
+
+        -- estado DISABLED (apaga la fila: no responde y se atenúa) · disponible en la API
+        local function setEnabled(en)
+            disabled = not en
+            row.Active   = en
+            row.AutoButtonColor = false
+            tw(row, { BackgroundTransparency = en and 0.0 or 0.5 }, DUR_FAST)
+            tw(tl,  { TextTransparency = en and 0 or 0.55 }, DUR_FAST)
+            if subLabel then tw(subLabel, { TextTransparency = en and 0 or 0.55 }, DUR_FAST) end
+            trackSw.BackgroundColor3 = (not en) and C.DISABLED or (state and C.ON or C.OFF)
         end
 
         -- estados Idle/Hover/Press con microanimaciones (sin tocar FPS)
         trackUI(row.MouseEnter:Connect(function()
-            tw(row, { BackgroundTransparency = 0.10 }, DUR_FAST)
+            if disabled then return end
+            tw(row, { BackgroundColor3 = C.ROW_HOV, BackgroundTransparency = 0.0 }, DUR_FAST)
+            tw(rowScale, { Scale = 1.015 }, DUR_FAST, EASE_POP)
+            tw(rowStroke, { Transparency = 0.3 }, DUR_FAST)
         end))
         trackUI(row.MouseLeave:Connect(function()
-            tw(row, { BackgroundTransparency = 0.25 }, DUR_FAST)
+            if disabled then return end
+            tw(row, { BackgroundColor3 = C.ROW, BackgroundTransparency = 0.0 }, DUR_FAST)
             tw(rowScale, { Scale = 1 }, DUR_FAST)
+            tw(rowStroke, { Transparency = 0.6 }, DUR_FAST)
         end))
         trackUI(row.MouseButton1Down:Connect(function()
-            tw(rowScale, { Scale = 0.98 }, DUR_FAST)
+            if disabled then return end
+            tw(rowScale, { Scale = 0.975 }, DUR_FAST)
         end))
         trackUI(row.MouseButton1Up:Connect(function()
-            tw(rowScale, { Scale = 1 }, DUR_FAST, Enum.EasingStyle.Back)
+            if disabled then return end
+            tw(rowScale, { Scale = 1.015 }, DUR_FAST, EASE_POP)
         end))
 
-        safeClick(row, function() onToggle(not state) end)
+        safeClick(row, function() if not disabled then onToggle(not state) end end)
 
         local function setSub(text) if subLabel then subLabel.Text = text end end
-        return { row = row, setOn = setOn, setSub = setSub }
+        return { row = row, setOn = setOn, setSub = setSub, setEnabled = setEnabled }
     end
 
     -- ════════════ SECCIÓN: MOVIMIENTO ════════════
@@ -1191,11 +1343,13 @@ buildUI = function(firstBuild)
     local sliderRow = Instance.new("Frame", body)
     sliderRow.Size                   = UDim2.new(1, -2 * PAD, 0, 54)
     sliderRow.Position               = UDim2.new(0, PAD, 0, 198)
+    -- FIX v6.3: color SÓLIDO como las filas (misma jerarquía visual)
     sliderRow.BackgroundColor3       = C.ROW
-    sliderRow.BackgroundTransparency = 0.25
+    sliderRow.BackgroundTransparency = 0.0
     sliderRow.BorderSizePixel        = 0
-    corner(sliderRow, 10)
-    stroke(sliderRow, 0.88)
+    corner(sliderRow, 12)
+    glassStroke(sliderRow, 0.6, 1.2)
+    addSpecular(sliderRow, 1, 1, 0.6)
 
     local radLabel = Instance.new("TextLabel", sliderRow)
     radLabel.Size                   = UDim2.new(0, 120, 0, 16)
@@ -1226,6 +1380,7 @@ buildUI = function(firstBuild)
     trackBar.BorderSizePixel  = 0
     corner(trackBar, 3)
 
+    -- FIX v6.3: relleno azul SÓLIDO (color exacto, sin multiply)
     local fill = Instance.new("Frame", trackBar)
     fill.BackgroundColor3 = C.ACCENT
     fill.BorderSizePixel  = 0
@@ -1240,6 +1395,8 @@ buildUI = function(firstBuild)
     knob.ZIndex           = 3
     corner(knob, 8)
     stroke(knob, 0, 1.5, C.ACCENT)
+    local knobHalo = Instance.new("UIStroke", knob)   -- halo del acento alrededor de la perilla
+    knobHalo.Color = C.ACCENT_2; knobHalo.Thickness = 5; knobHalo.Transparency = 0.7
 
     -- zona de agarre invisible (más alta que el carril => fácil de tomar, incluso touch)
     local grab = Instance.new("TextButton", sliderRow)
@@ -1275,7 +1432,8 @@ buildUI = function(firstBuild)
         if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
             sliding = true
             _panelDrag = false   -- corta el drag del panel para que no se peleen
-            tw(knob, { Size = UDim2.new(0, 20, 0, 20), Position = UDim2.new(knob.Position.X.Scale, -10, 0.5, -10) }, DUR_FAST, Enum.EasingStyle.Back)
+            tw(knob, { Size = UDim2.new(0, 20, 0, 20), Position = UDim2.new(knob.Position.X.Scale, -10, 0.5, -10) }, DUR_FAST, EASE_POP)
+            tw(knobHalo, { Transparency = 0.35, Thickness = 7 }, DUR_FAST)   -- feedback en vivo al agarrar
             setFromX(i.Position.X)
         end
     end))
@@ -1290,7 +1448,8 @@ buildUI = function(firstBuild)
         if sliding and (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) then
             sliding = false
             local f = math.clamp((ANCHOR.RADIUS - RMIN) / (RMAX - RMIN), 0, 1)
-            tw(knob, { Size = UDim2.new(0, 16, 0, 16), Position = UDim2.new(f, -8, 0.5, -8) }, DUR_FAST, Enum.EasingStyle.Back)
+            tw(knob, { Size = UDim2.new(0, 16, 0, 16), Position = UDim2.new(f, -8, 0.5, -8) }, DUR_FAST, EASE_POP)
+            tw(knobHalo, { Transparency = 0.7, Thickness = 5 }, DUR_MED)   -- vuelve a reposo
         end
     end))
 
@@ -1354,7 +1513,7 @@ buildUI = function(firstBuild)
     -- ════════════ MINIMIZAR ════════════
     local minimized = false
     trackUI(minBtn.MouseEnter:Connect(function() tw(minBtn, { BackgroundTransparency = 0.1 }, DUR_FAST) end))
-    trackUI(minBtn.MouseLeave:Connect(function() tw(minBtn, { BackgroundTransparency = 0.35 }, DUR_FAST) end))
+    trackUI(minBtn.MouseLeave:Connect(function() tw(minBtn, { BackgroundTransparency = 0.45 }, DUR_FAST) end))
     safeClick(minBtn, function()
         minimized = not minimized
         if minimized then
@@ -1388,9 +1547,13 @@ buildUI = function(firstBuild)
     -- ════════════ ANIMACIÓN DE ENTRADA (solo en el primer build) ════════════
     if firstBuild then
         panel.BackgroundTransparency = 1
-        local pScale = Instance.new("UIScale", panel); pScale.Scale = 0.94
-        tw(panel, { BackgroundTransparency = 0.04 }, DUR_MED)
-        tw(pScale, { Scale = 1 }, DUR_SLOW, Enum.EasingStyle.Back)
+        panelGlow.BackgroundTransparency = 1
+        panelShadow.BackgroundTransparency = 1
+        local pScale = Instance.new("UIScale", panel); pScale.Scale = 0.92
+        tw(panel, { BackgroundTransparency = 0.05 }, DUR_MED)
+        tw(panelGlow, { BackgroundTransparency = 0.72 }, DUR_SLOW)
+        tw(panelShadow, { BackgroundTransparency = 0.35 }, DUR_SLOW)
+        tw(pScale, { Scale = 1 }, DUR_SLOW, EASE_POP)
 
         -- stagger de las filas/secciones
         local stagger = { moreRow.row, lessRow.row, anchorRow.row, sliderRow, radiusRow.row }
@@ -1466,4 +1629,4 @@ task.spawn(function()
     end
 end)
 
-print("KEEP DISTANCE v6.1 cargado · Radio unificado (More Distance detecta al valor del slider = círculo azul, tope 200) · UI PREMIUM · CEREBRO DE ESCAPE + SUPER DETECCIÓN + BLINDAJE · Air Walk safe.")
+print("KEEP DISTANCE v6.5 cargado · ★ FIX RAÍZ: ZIndexBehavior=Sibling (el panel ya NO tapa el contenido) — textos, tarjetas y slider VISIBLES por fin · vidrio sutil restaurado · CEREBRO DE ESCAPE + SUPER DETECCIÓN + BLINDAJE · Air Walk safe.")
