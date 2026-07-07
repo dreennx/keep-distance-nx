@@ -156,8 +156,10 @@ local SMART = {
 }
 
 -- ════════════ DISCORD (logo NX) ════════════
--- << PEGA AQUI TU INVITE DE DISCORD >>
-local DISCORD_LINK = "https://discord.gg/TU_INVITE"
+-- Al tocar el logo NX abre TU Discord DIRECTO EN LA APP usando el RPC local de
+-- Discord (puertos 6463-6472, igual que tu Analyzer). Si la app no esta abierta,
+-- el invite igual queda copiado en el portapapeles como red de seguridad.
+local DISCORD_INVITE = "https://discord.gg/JgsW2M6322"   -- tu invite (se copia + abre en la app)
 
 -- ════════════ PALETA (glass oscuro premium) ════════════
 local C = {
@@ -865,26 +867,45 @@ buildUI = function(firstBuild)
     hLine.BackgroundTransparency = 0.88
     hLine.BorderSizePixel        = 0
 
-    -- drag por el header (se bloquea si estamos arrastrando el slider)
+    -- drag por el header (smooth lerp · se bloquea si estamos arrastrando el slider)
     local _panelDrag = false   -- expuesto para que el slider lo bloquee
     do
         local dragStart, startPos = nil, nil
+        local dragTargetX, dragTargetY = 0, 0
+        local DRAG_SMOOTH = 0.18   -- lerp factor (0 = pegajoso, 1 = directo)
+
         trackUI(header.InputBegan:Connect(function(i)
             if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
                 _panelDrag = true; dragStart = i.Position; startPos = panel.Position
+                dragTargetX = startPos.X.Offset
+                dragTargetY = startPos.Y.Offset
             end
         end))
         trackUI(UserInputService.InputChanged:Connect(function(i)
             if _panelDrag and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
                 local d = i.Position - dragStart
-                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                            startPos.Y.Scale, startPos.Y.Offset + d.Y)
+                dragTargetX = startPos.X.Offset + d.X
+                dragTargetY = startPos.Y.Offset + d.Y
             end
         end))
         trackUI(UserInputService.InputEnded:Connect(function(i)
             if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
                 _panelDrag = false
             end
+        end))
+
+        trackUI(RunService.RenderStepped:Connect(function()
+            if not _panelDrag and math.abs(panel.Position.X.Offset - dragTargetX) < 0.5 then return end
+            if not _panelDrag and not startPos then return end
+            local cx = panel.Position.X.Offset
+            local cy = panel.Position.Y.Offset
+            local nx = cx + (dragTargetX - cx) * DRAG_SMOOTH
+            local ny = cy + (dragTargetY - cy) * DRAG_SMOOTH
+            if not _panelDrag and math.abs(nx - dragTargetX) < 0.5 and math.abs(ny - dragTargetY) < 0.5 then
+                nx, ny = dragTargetX, dragTargetY
+            end
+            panel.Position = UDim2.new(startPos and startPos.X.Scale or 0, nx,
+                                        startPos and startPos.Y.Scale or 0, ny)
         end))
     end
 
@@ -942,22 +963,51 @@ buildUI = function(firstBuild)
         end)
     end
 
-    -- ════════════ ABRIR DISCORD (logo NX) ════════════
-    -- Xeno bloquea OpenBrowserWindow -> copiamos al portapapeles + intento de abrir.
+    -- ════════════ ABRIR DISCORD (logo NX) — RPC LOCAL DE LA APP ════════════
+    -- Usa el RPC local de Discord (puertos 6463-6472) con el comando INVITE_BROWSER
+    -- para abrir el invite DIRECTO EN LA APP (mismo truco que tu Analyzer). Xeno SÍ
+    -- puede pegarle a 127.0.0.1. Si la app no está abierta, el request falla en
+    -- silencio y el invite queda copiado igual.
+    local httpReq     = (syn and syn.request) or (http and http.request) or http_request or request
+    local HttpService = game:GetService("HttpService")
+
     local function openDiscord()
+        -- 1) copia SIEMPRE (red de seguridad, por si la app no está abierta)
         local copied = false
         pcall(function()
             local clip = setclipboard or toclipboard or (syn and syn.write_clipboard) or writeclipboard
-            if clip then clip(DISCORD_LINK); copied = true end
+            if clip then clip(DISCORD_INVITE); copied = true end
         end)
-        pcall(function()
-            game:GetService("GuiService"):OpenBrowserWindow(DISCORD_LINK)
-        end)
-        if copied then
-            toast("Discord copiado · pégalo en tu navegador", true)
-        else
-            toast("Discord: " .. DISCORD_LINK, true)
+
+        -- 2) saca el código del invite (lo último del link) y dispara el RPC en la app
+        local code = DISCORD_INVITE:match("([%w%-_]+)%s*$")
+        if code and httpReq then
+            task.spawn(function()
+                for port = 6463, 6472 do                      -- Discord escucha en uno de estos
+                    pcall(function()
+                        httpReq({
+                            Url     = "http://127.0.0.1:" .. port .. "/rpc?v=1",
+                            Method  = "POST",
+                            Headers = {
+                                ["Content-Type"] = "application/json",
+                                ["Origin"]       = "https://discord.com",
+                            },
+                            Body = HttpService:JSONEncode({
+                                cmd   = "INVITE_BROWSER",
+                                args  = { code = code },
+                                nonce = HttpService:GenerateGUID(false),
+                            }),
+                        })
+                    end)
+                end
+            end)
+            toast("Abriendo Discord en la app…", true)
+            return
         end
+
+        -- 3) sin http_request: al menos quedó en el portapapeles
+        toast(copied and "Discord copiado · pégalo en tu navegador"
+                     or  ("Discord: " .. DISCORD_INVITE), true)
     end
 
     -- ── etiqueta de sección ──
