@@ -1,7 +1,26 @@
 -- ═══════════════════════════════════════════════════════════
--- KEEP DISTANCE v7.0 · Detección blindada + Pre-detección + UI limpia
+-- KEEP DISTANCE v7.2 · Fix regreso al ancla + Super detección 360°
 --
--- ★ NUEVO v7.0 — DETECCIÓN:
+-- ★ FIX v7.2 — ANCLA "tarda en volver":
+--   La condición previa (`if not (contested or outOfRange) then return end`)
+--   solo tiraba de vuelta si el ancla estaba disputada o si salías del radio.
+--   Con radios grandes (More = 125) te empujaban 100 studs, la amenaza se iba,
+--   y el ancla NO te movía porque técnicamente seguías "dentro del radio".
+--   Ahora regresa siempre a `home` cuando no hay amenaza, con DEADZONE de 0.4
+--   para no vibrar en el sitio.
+--
+-- ★ NUEVO v7.1 — SUPER DETECCIÓN 360°:
+--   · Filtro vertical ASIMÉTRICO: abajo sigue filtrando (tu Air Walk pasa por
+--     encima del piso, no querés a los del suelo como amenaza), pero ARRIBA
+--     casi no filtra (VERT_UP=250). Los flyers/exploiters que se ciernen sobre
+--     ti ahora SÍ se detectan. Antes cualquier |ΔY|>28 quedaba invisible.
+--   · Ghost más largo: HOLD_TIME 1.5→3.0s y GHOST_MAX 0.35→0.6s. Un invisible
+--     que parpadea o desaparece un segundo sigue trackeado con su rumbo.
+--   · Caza-huérfanos: si un cheat reparenta el Character (Parent=nil o lo mete
+--     en un folder oculto del Workspace), lo encontramos por nombre y sigue
+--     contando. Cache de 0.5s para no barrer el Workspace cada frame.
+--
+-- ★ v7.0 — DETECCIÓN:
 --   · HARD FLOOR (blindaje de contacto): nadie entra en CONTACT.HARD_R. Si alguien
 --     lo cruza, el sistema calcula el paso EXACTO para salir (hasta 16 studs/frame)
 --     y lo aplica aunque haya pared (noclip). Prioridad 0: por encima de todo.
@@ -165,14 +184,22 @@ local DETECT = {
     PREDICT_ADAPT = 0.22,   -- s EXTRA cuando alguien te cierra rápido (predicción adaptativa)
     PREDICT_CLOSE = 120,    -- studs/s de cierre = anticipación máxima
     PREDICT_MAX   = 60,     -- studs máx de extrapolación (anti-fling: no perseguir fantasmas)
-    HOLD_TIME     = 1.5,    -- s que recordamos su última posición (invisibles que parpadean)
-    GHOST_MAX     = 0.35,   -- s máx que extrapolamos a un fantasma con su última velocidad
+    HOLD_TIME     = 3.0,    -- ★ v7.1: 1.5→3.0 · aguantamos más al invisible que parpadea largo
+    GHOST_MAX     = 0.6,    -- ★ v7.1: 0.35→0.6 · extrapolamos su rumbo el doble de tiempo
     USE_PIVOT     = true,   -- fallback GetPivot() si no hay ninguna parte localizable
     DEEP_SCAN     = true,   -- buscar CUALQUIER BasePart si no hay HRP/Head (cazar partes ocultas)
     SKIP_DEAD     = true,   -- ignorar personajes muertos (falso positivo puro)
     VEL_EST_MAX   = 400,    -- tope de la velocidad estimada por diferencia (anti-teleport)
-    VERT_LIMIT    = 28,     -- ★ |ΔY| a partir del cual alguien deja de ser amenaza (Air Walk)
-    VERT_FADE     = 10,     -- studs de desvanecido suave del filtro vertical (sin parpadeo)
+    -- ★ v7.1 · FILTRO VERTICAL ASIMÉTRICO ★
+    -- Antes era simétrico (|ΔY| > 28 => ignorar): eso escondía a los flyers/exploiters
+    -- que se te ponían ENCIMA. La razón del filtro es tu Air Walk (te elevas y los del
+    -- suelo se leían como amenaza), pero eso solo pasa hacia ABAJO. Hacia ARRIBA no
+    -- hay motivo para filtrar => techo brutal para cazar a todo lo que vuele sobre ti.
+    VERT_DOWN      = 28,    -- studs POR DEBAJO tuyo a partir de los cuales dejan de ser amenaza (Air Walk)
+    VERT_DOWN_FADE = 10,    -- desvanecido suave del filtro de abajo (sin parpadeo al subir/bajar)
+    VERT_UP        = 250,   -- ★ techo · casi cualquiera sobre ti cuenta como amenaza
+    VERT_UP_FADE   = 40,    -- desvanecido suave de arriba
+    ORPHAN_SCAN    = true,  -- ★ v7.1: si plr.Character = nil (cheat que reparenta) lo buscamos en Workspace
 }
 
 -- ════════════ BLINDAJE DE CONTACTO (nunca tocar a nadie) ════════════
@@ -415,6 +442,40 @@ local function getCharPart(char)
     return nil
 end
 
+-- ★ v7.1 · CAZA-HUÉRFANOS: personajes reparentados fuera de plr.Character.
+-- Algunos cheats mueven el Character a otro sitio (Parent=nil, o a un Folder de
+-- Workspace) para esconderse de scripts que solo miran plr.Character. Aquí lo
+-- buscamos en Workspace por nombre y por Humanoid.Parent como fallback.
+-- Cache breve para no barrer todo el Workspace cada frame.
+local _orphanCache = {}   -- [playerName] = { m = Model, t = os.clock() }
+local ORPHAN_TTL   = 0.5  -- s
+
+local function findOrphanChar(name)
+    local now  = os.clock()
+    local hit  = _orphanCache[name]
+    if hit and (now - hit.t) < ORPHAN_TTL and hit.m and hit.m.Parent then
+        return hit.m
+    end
+    -- 1) atajo: hijo directo de Workspace con ese nombre
+    local direct = Workspace:FindFirstChild(name)
+    if direct and direct:IsA("Model") and direct:FindFirstChildWhichIsA("Humanoid") then
+        _orphanCache[name] = { m = direct, t = now }
+        return direct
+    end
+    -- 2) barrido superficial: 1 nivel de folders (típico "IgnoreFolder", "_hidden", …)
+    for _, top in ipairs(Workspace:GetChildren()) do
+        if top:IsA("Folder") or top:IsA("Model") then
+            local m = top:FindFirstChild(name)
+            if m and m:IsA("Model") and m:FindFirstChildWhichIsA("Humanoid") then
+                _orphanCache[name] = { m = m, t = now }
+                return m
+            end
+        end
+    end
+    _orphanCache[name] = { m = nil, t = now }
+    return nil
+end
+
 -- Lectura cruda: posición real + velocidad real (sin predicción todavía).
 local function readChar(char)
     local part = getCharPart(char)
@@ -468,15 +529,23 @@ local function predictPos(raw, vel, myPos)
     return raw + pred
 end
 
--- ★ Filtro vertical (anti falso positivo con Air Walk): devuelve el bias de distancia.
--- Dentro de LIMIT-FADE: amenaza real (bias 0). Más allá de LIMIT: no es amenaza (nil).
--- En medio: se desvanece progresivo => nada de parpadeos al subir/bajar.
+-- ★ v7.1 · Filtro vertical ASIMÉTRICO. dy = otherY - myY (>0 = él está arriba tuyo).
+--   · dy < 0 (él ABAJO): filtro clásico Air Walk. A partir de VERT_DOWN, no cuenta.
+--   · dy > 0 (él ARRIBA): techo altísimo (VERT_UP). Los flyers/exploiters SÍ cuentan.
+-- En la zona de fade se desvanece progresivo (nada de parpadeos al subir/bajar).
 local function verticalBias(dy)
-    local ady  = math.abs(dy)
-    local soft = DETECT.VERT_LIMIT - DETECT.VERT_FADE
-    if ady <= soft then return 0 end
-    if ady >= DETECT.VERT_LIMIT then return nil end
-    return ((ady - soft) / DETECT.VERT_FADE) * 400
+    if dy >= 0 then
+        local soft = DETECT.VERT_UP - DETECT.VERT_UP_FADE
+        if dy <= soft then return 0 end
+        if dy >= DETECT.VERT_UP then return nil end
+        return ((dy - soft) / DETECT.VERT_UP_FADE) * 400
+    else
+        local ady  = -dy
+        local soft = DETECT.VERT_DOWN - DETECT.VERT_DOWN_FADE
+        if ady <= soft then return 0 end
+        if ady >= DETECT.VERT_DOWN then return nil end
+        return ((ady - soft) / DETECT.VERT_DOWN_FADE) * 400
+    end
 end
 
 -- p = posición ANTICIPADA (para medir amenaza ahora mismo)
@@ -500,6 +569,10 @@ local function refreshFrameCache(myPos)
 
     for _, plr in ipairs(Players:GetPlayers()) do
         local ch = plr.Character
+        -- ★ v7.1: si su Character = nil, intentamos rescatarlo del Workspace
+        if not ch and plr ~= LocalPlayer and DETECT.ORPHAN_SCAN then
+            ch = findOrphanChar(plr.Name)
+        end
         if ch then _excludeList[#_excludeList + 1] = ch end
 
         if plr ~= LocalPlayer then
@@ -852,12 +925,13 @@ local function mainHeartbeat()
         if hardFloorStep(root, myPos) then return end
 
         -- ── PRIORIDAD 1: ANCLA ──
+        -- ★ v7.2 FIX (bug reportado: "tarda en volver"): antes solo tiraba de
+        -- vuelta si el ancla estaba disputada O si salías del ANCHOR.RADIUS.
+        -- Con radios grandes (More = 125) podías quedar 100 studs del ancla,
+        -- sin nadie cerca, y no te movía nunca. Ahora siempre regresa a target
+        -- (que sin amenaza = home). La DEADZONE evita el temblor en el sitio.
         if anchored and home then
-            local target, contested = computeAnchorTarget()
-            local fromHome   = Vector3.new(myPos.X - home.X, 0, myPos.Z - home.Z)
-            local outOfRange = fromHome.Magnitude > ANCHOR.RADIUS
-
-            if not (contested or outOfRange) then return end
+            local target, _ = computeAnchorTarget()
 
             local push = Vector3.new(target.X - myPos.X, 0, target.Z - myPos.Z)
             if push.Magnitude < ANCHOR.DEADZONE then return end
@@ -1956,4 +2030,4 @@ task.spawn(function()
     end
 end)
 
-print("KEEP DISTANCE v7.0 cargado · SUELO DURO (nadie entra en " .. CONTACT.HARD_R .. " studs) · predicción adaptativa + velocidad estimada + scoring con futuro · filtro vertical anti falso positivo (Air Walk) · PRE-DETECCIÓN (2º radio, solo avisa) · giro y paso suavizados · UI sin sombras · Air Walk safe.")
+print("KEEP DISTANCE v7.2 cargado · FIX regreso al ancla (ya no queda clavado dentro del radio) · SUPER DETECCIÓN 360° (invisibles + arriba " .. DETECT.VERT_UP .. " studs + huérfanos) · SUELO DURO (" .. CONTACT.HARD_R .. " studs) · predicción adaptativa · ghost " .. DETECT.HOLD_TIME .. "s · filtro vertical asimétrico (abajo " .. DETECT.VERT_DOWN .. ") · PRE-DETECCIÓN · Air Walk safe.")
