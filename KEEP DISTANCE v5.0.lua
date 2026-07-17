@@ -1,53 +1,55 @@
 -- ═══════════════════════════════════════════════════════════
--- KEEP DISTANCE v7.2 · Fix regreso al ancla + Super detección 360°
+-- KEEP DISTANCE v8.0 · Núcleo de detección por capas
 --
--- ★ FIX v7.2 — ANCLA "tarda en volver":
---   La condición previa (`if not (contested or outOfRange) then return end`)
---   solo tiraba de vuelta si el ancla estaba disputada o si salías del radio.
---   Con radios grandes (More = 125) te empujaban 100 studs, la amenaza se iba,
---   y el ancla NO te movía porque técnicamente seguías "dentro del radio".
---   Ahora regresa siempre a `home` cuando no hay amenaza, con DEADZONE de 0.4
---   para no vibrar en el sitio.
+-- ★★ FIX v8.0 — EL FLYER QUE TE EMPUJABA (bug grave de v7.1) ★★
+--   v7.1 subió VERT_UP a 250 para cazar flyers. Efecto secundario: `verticalBias`
+--   devolvía 0 hasta 210 studs de altura, y la distancia se medía SOLO en XZ. O sea
+--   que alguien volando 100 studs sobre tu cabeza se leía "a 0 studs" → el suelo
+--   duro (prioridad 0, no negocia) se disparaba y te arrastraba por el mapa sin que
+--   nadie te tocara nunca. Cuanto más alto volaba, igual de "encima" te parecía.
+--   Causa raíz: UNA sola métrica respondiendo dos preguntas distintas.
+--   Ahora son tres, cada una para lo suyo (ver "MEDIDAS"):
+--     · nearest3D      → contacto físico REAL (con Y). Solo la usa el suelo duro.
+--     · nearestThreat  → XZ + bias vertical. Decide SI evadís (respeta tu Air Walk).
+--     · scoreAt        → como threat pero ponderada por comportamiento. Decide DÓNDE.
+--   Y el bias de ARRIBA pasa a ser progresivo (pesa 1:1 desde VERT_UP_SOFT), no un
+--   escalón: el que se cierne sobre ti sigue contando, el que pasa alto ya no.
 --
--- ★ NUEVO v7.1 — SUPER DETECCIÓN 360°:
---   · Filtro vertical ASIMÉTRICO: abajo sigue filtrando (tu Air Walk pasa por
---     encima del piso, no querés a los del suelo como amenaza), pero ARRIBA
---     casi no filtra (VERT_UP=250). Los flyers/exploiters que se ciernen sobre
---     ti ahora SÍ se detectan. Antes cualquier |ΔY|>28 quedaba invisible.
---   · Ghost más largo: HOLD_TIME 1.5→3.0s y GHOST_MAX 0.35→0.6s. Un invisible
---     que parpadea o desaparece un segundo sigue trackeado con su rumbo.
---   · Caza-huérfanos: si un cheat reparenta el Character (Parent=nil o lo mete
---     en un folder oculto del Workspace), lo encontramos por nombre y sigue
---     contando. Cache de 0.5s para no barrer el Workspace cada frame.
+-- ★★ FIX v8.0 — MISMO COMPORTAMIENTO EN MÓVIL Y EN PC ★★
+--   Todo el movimiento de v7.x era por FRAME (MAX_STEP = 5 studs/frame). En la
+--   práctica el tool corría a 150 studs/s en un móvil de 30fps y a 720 en un PC de
+--   144: ninguna constante servía para las dos. Ahora todo va en studs/SEGUNDO y
+--   grados/SEGUNDO, escalado por un dt acotado (DT_MAX: un lag spike no te
+--   teletransporta). Los valores equivalen exactamente a los de v7.2 a 60fps.
 --
--- ★ v7.0 — DETECCIÓN:
---   · HARD FLOOR (blindaje de contacto): nadie entra en CONTACT.HARD_R. Si alguien
---     lo cruza, el sistema calcula el paso EXACTO para salir (hasta 16 studs/frame)
---     y lo aplica aunque haya pared (noclip). Prioridad 0: por encima de todo.
---   · Predicción ADAPTATIVA: cuanto más rápido te cierra alguien, más lejos mira.
---   · Velocidad ESTIMADA por diferencia de posición (los replicados que llegan con
---     AssemblyLinearVelocity = 0 ya no se cuelan).
---   · Scoring con FUTURO: las rutas se puntúan contra dónde VAN a estar los otros,
---     no dónde estaban. Ya no te metes por delante del que viene.
---   · Filtro VERTICAL (anti falso positivo · Air Walk): la gente 28+ studs debajo
---     de ti ya no cuenta como amenaza. Se desvanece suave, no de golpe.
---   · Fantasmas: a los invisibles se les extrapola su última velocidad conocida.
---   · Muertos ignorados (Humanoid.Health <= 0).
+-- ★★ FIX v8.0 — estimateVel NO FUNCIONABA ARRIBA DE 120 FPS ★★
+--   v7.x derivaba la velocidad contra el frame anterior exigiendo dt >= 1/120. A
+--   144fps el dt de un frame es 0.0069 < 0.0083 → la estimación jamás corría y los
+--   replicados con AssemblyLinearVelocity = 0 (justo los rápidos, el caso que v7.0
+--   quería resolver) quedaban sin predicción. Ahora la muestra base tiene timestamp
+--   propio y se refresca cada VEL_SAMPLE: funciona igual a 30 que a 240 fps.
 --
--- ★ NUEVO v7.0 — SUAVIDAD (sin movimientos bruscos):
---   · Límite de giro por frame + rampa del paso. En emergencia el límite se relaja
---     de forma proporcional (no tocar > verse suave).
+-- ★ NUEVO v8.0 — CAPA DE SENSADO (tracks):
+--   Un track por jugador con memoria corta: parte cacheada (se acabó el
+--   GetDescendants por frame), velocidad estable, confianza y flags. Recorte
+--   espacial ANTES de puntuar: v7.x puntuaba rutas contra los 40 del servidor
+--   (16 direcciones × 2 sondas × 40 jugadores por frame); ahora solo entran los
+--   que pueden importar.
 --
--- ★ NUEVO v7.0 — RADIO DE PRE-DETECCIÓN (segundo radio, independiente):
---   · SOLO informa y prepara. No mueve, no evita, no toca el movimiento.
---   · Precalcula la ruta mientras el jugador se acerca => al entrar al radio
---     principal la reacción es de 0 frames de latencia.
+-- ★ NUEVO v8.0 — CAPA DE COMPORTAMIENTO (noclip · teleport · stalking · speed · fly):
+--   ⚠ REGLA DE ORO: un flag NUNCA ejecuta una acción ni cambia el trigger de
+--   evasión. Solo (a) prioriza —de quién huís primero cuando hay varios— y (b)
+--   informa a la pre-detección. Un falso positivo acá te hace mirar más a alguien,
+--   jamás saltar. Presupuesto de raycasts por frame: no cuesta FPS.
 --
--- ★ NUEVO v7.0 — UI: fuera las sombras/halos de detrás del panel. Radios, bordes
---   y espaciado unificados por sistema (R.*, PAD/GAP/SEC).
+-- ★ v8.0 — SCORING COHERENTE: `look` y `HORIZON` ahora hablan del MISMO instante.
+--   En v7.x tu posición se proyectaba ~4 frames (0.07s) pero la de los otros 0.35s:
+--   las dos mitades del scoring comparaban momentos distintos.
 --
--- Base heredada: FIX ZIndexBehavior=Sibling (v6.5) · colores sólidos (v6.3) ·
--- CEREBRO DE ESCAPE · SIN SALTO (Air Walk safe) · BLINDAJE anti-ataques.
+-- Base heredada (intacta): UI glass NX + blindaje + watchdog + sessionAlive ·
+-- ZIndexBehavior=Sibling (v6.5) · colores sólidos (v6.3) · tope TCPA (v7.0) ·
+-- ghost de invisibles + caza-huérfanos (v7.1) · fix regreso al ancla (v7.2) ·
+-- SIN SALTO (Air Walk safe) · el pre-radio SOLO informa.
 -- ═══════════════════════════════════════════════════════════
 
 local Players          = game:GetService("Players")
@@ -84,9 +86,10 @@ local lastSafePos = nil
 -- estado del cerebro de escape (keep distance)
 local evading       = false   -- true mientras huimos (activa la histéresis)
 local lastEscapeDir = nil     -- último rumbo elegido (anti-zigzag)
-local stuckFrames   = 0       -- frames seguidos sin avanzar (anti-atasco)
+local stuckTime     = 0       -- ★ v8.0: SEGUNDOS sin avanzar (era frames: se destrababa
+                              -- a destiempo según el fps de cada máquina)
 local lastFramePos  = nil     -- posición del frame anterior mientras evadimos
-local stepSmooth    = 0       -- longitud de paso suavizada (rampa · anti-brusquedad)
+local speedSmooth   = 0       -- ★ v8.0: velocidad suavizada en studs/s (era paso/frame)
 
 -- estado del anillo de rango (indicador visual del radio)
 local showRing    = false   -- ÚNICO control del círculo (botón ojo). false = no aparece NUNCA.
@@ -145,13 +148,21 @@ local function sessionAlive()
 end
 
 -- ════════════ CONFIG ════════════
+-- ★ v8.0 · TODO EN studs/SEGUNDO (antes era studs/FRAME).
+-- Los valores son los de v7.2 multiplicados por 60: a 60fps el tool se mueve
+-- EXACTAMENTE igual que antes, pero ahora un móvil a 30fps y un PC a 144 hacen
+-- lo mismo en vez de correr a mitad y al doble de velocidad respectivamente.
 local MODES = {
     -- More.SAFE_DISTANCE ya NO se usa directo: More sigue el slider del Radio (ver modeSafeDistance).
-    More = { SAFE_DISTANCE = 125, MAX_STEP = 5   },
-    Less = { SAFE_DISTANCE = 8,   MAX_STEP = 2.5 },
+    More = { SAFE_DISTANCE = 125, MAX_SPEED = 300 },   -- era MAX_STEP 5   /frame
+    Less = { SAFE_DISTANCE = 8,   MAX_SPEED = 150 },   -- era MAX_STEP 2.5 /frame
 }
 local GROUND_CHECK = 15
 local WALL_CHECK   = 3
+
+-- Techo del delta-time. Sin esto, un lag spike de 0.5s se traduce en un salto de
+-- 150 studs en un frame (y el guard anti-fling lo leería como un ataque).
+local DT_MAX = 0.08   -- s
 
 local ANCHOR = {
     RADIUS      = 125,   -- alcance de More Distance + radio del ancla + círculo azul (unificado)
@@ -160,7 +171,7 @@ local ANCHOR = {
     RADIUS_STEP = 5,
     CLEAR_DIST  = 12,
     DEADZONE    = 0.4,
-    MAX_STEP    = 5,
+    MAX_SPEED   = 300,   -- studs/s (era MAX_STEP 5 /frame)
 }
 
 -- Distancia de reacción EFECTIVA del modo activo.
@@ -190,23 +201,38 @@ local DETECT = {
     DEEP_SCAN     = true,   -- buscar CUALQUIER BasePart si no hay HRP/Head (cazar partes ocultas)
     SKIP_DEAD     = true,   -- ignorar personajes muertos (falso positivo puro)
     VEL_EST_MAX   = 400,    -- tope de la velocidad estimada por diferencia (anti-teleport)
-    -- ★ v7.1 · FILTRO VERTICAL ASIMÉTRICO ★
-    -- Antes era simétrico (|ΔY| > 28 => ignorar): eso escondía a los flyers/exploiters
-    -- que se te ponían ENCIMA. La razón del filtro es tu Air Walk (te elevas y los del
-    -- suelo se leían como amenaza), pero eso solo pasa hacia ABAJO. Hacia ARRIBA no
-    -- hay motivo para filtrar => techo brutal para cazar a todo lo que vuele sobre ti.
+    VEL_SAMPLE    = 1/30,   -- ★ v8.0: cada cuánto se refresca la muestra base de velocidad.
+                            -- v7.x comparaba contra el frame anterior con un mínimo de
+                            -- 1/120 s: a 144fps el dt de frame (0.0069) nunca lo alcanzaba
+                            -- y la estimación quedaba muerta. Con muestra propia, el fps
+                            -- deja de importar.
+    -- ★ v8.0 · FILTRO VERTICAL ASIMÉTRICO (revisado) ★
+    -- El filtro existe por tu Air Walk: vuelas y los del suelo se leían como amenaza.
+    -- Eso solo pasa hacia ABAJO → ahí el corte es duro (VERT_DOWN, con fade).
+    -- Hacia ARRIBA v7.1 puso un techo de 250 con bias 0 hasta los 210: como la
+    -- distancia se mide en XZ, un flyer 100 studs sobre tu cabeza medía 0 studs y
+    -- disparaba el suelo duro. Ahora la altura pesa PROGRESIVO (1:1 desde
+    -- VERT_UP_SOFT): el que se cierne sobre ti cuenta, el que pasa alto no.
     VERT_DOWN      = 28,    -- studs POR DEBAJO tuyo a partir de los cuales dejan de ser amenaza (Air Walk)
     VERT_DOWN_FADE = 10,    -- desvanecido suave del filtro de abajo (sin parpadeo al subir/bajar)
-    VERT_UP        = 250,   -- ★ techo · casi cualquiera sobre ti cuenta como amenaza
-    VERT_UP_FADE   = 40,    -- desvanecido suave de arriba
+    VERT_UP_SOFT   = 25,    -- ★ v8.0: hasta acá, alguien arriba cuenta como si estuviera a tu nivel
+    VERT_UP        = 250,   -- techo de existencia: más arriba, ni se trackea
     ORPHAN_SCAN    = true,  -- ★ v7.1: si plr.Character = nil (cheat que reparenta) lo buscamos en Workspace
+    SCAN_MARGIN    = 80,    -- ★ v8.0: studs de colchón del recorte espacial (predicción + look-ahead)
 }
 
 -- ════════════ BLINDAJE DE CONTACTO (nunca tocar a nadie) ════════════
 local CONTACT = {
     HARD_R   = 6,     -- ★ SUELO DURO: nadie puede estar más cerca. Se hace cumplir SIEMPRE.
+                      -- ★ v8.0: se mide en 3D REAL. Alguien 6 studs por encima ya no te
+                      -- empuja (no te toca); a tu lado, se comporta igual que siempre.
     BUFFER   = 1.5,   -- margen extra al salir (evita rebotar en el borde exacto)
-    MAX_STEP = 16,    -- studs/frame máx del blindaje (supera a cualquier corredor)
+    MAX_STEP = 16,    -- studs máx de UN empujón del blindaje. Ojo: esto NO es velocidad y
+                      -- por eso no se escala por dt — es una corrección de posición
+                      -- ("cuánto me falta para salir"), que es geométrica y ya se
+                      -- auto-limita: en cuanto sales, deja de dispararse.
+    ESCAPE_V = 960,   -- studs/s a los que puede llegar la evasión con urgencia máxima
+                      -- (= el viejo 16/frame × 60: lo que evita que un corredor te alcance)
     PANIC_R  = 10,    -- desde aquí la reacción del cerebro se acelera (no mueve por sí solo)
     PROBES   = 8,     -- resolución de la búsqueda del paso mínimo para salir
 }
@@ -214,22 +240,64 @@ local CONTACT = {
 -- ════════════ CEREBRO DE ESCAPE (elige ruta, no solo empuja) ════════════
 local SMART = {
     DIRS         = 16,    -- direcciones candidatas alrededor tuyo
-    LOOK_MULT    = 4,     -- cuántos pasos "mira hacia adelante" al puntuar cada ruta
-    HORIZON      = 0.35,  -- ★ s de futuro con los que se puntúa cada ruta (ellos también se mueven)
+    LOOK_MAX     = 40,    -- ★ v8.0: studs máx de proyección de TU ruta al puntuarla.
+                          -- v7.x usaba LOOK_MULT=4 pasos (≈0.07s) mientras proyectaba a
+                          -- los otros 0.35s: las dos mitades del scoring hablaban de
+                          -- instantes distintos. Ahora `look` manda y el horizonte se
+                          -- deriva de él (look/velocidad), así ambos miran el mismo momento.
+    HORIZON      = 0.35,  -- s de futuro deseados (recortados por LOOK_MAX si vas muy rápido)
     SEED_W       = 3,     -- bonus a la dirección natural de repulsión
     SMOOTH_W     = 2.5,   -- bonus a mantener el rumbo anterior (anti-zigzag)
     WALL_TRIES   = 4,     -- máx raycasts/frame buscando ruta sin pared (perf)
     EXIT_FACTOR  = 1.15,  -- histéresis: sigue evadiendo hasta safe*este margen
-    STUCK_FRAMES = 6,     -- frames sin avanzar -> noclip + re-decidir ruta
+    STUCK_TIME   = 0.1,   -- ★ v8.0: s sin avanzar -> noclip + re-decidir (era 6 FRAMES:
+                          -- 0.1s a 60fps pero 0.2s a 30fps y 0.04s a 144 → se destrababa
+                          -- a destiempo según la máquina)
 }
 
 -- ════════════ SUAVIDAD (anti movimientos bruscos) ════════════
 -- El límite de giro se RELAJA con la urgencia: lejos = curva natural, encima = giro libre.
+-- ★ v8.0: grados/SEGUNDO y constantes de tiempo. Equivalen a los valores de v7.2 a
+-- 60fps (55°/frame × 60 = 3300°/s), pero ahora el giro se ve igual a cualquier fps
+-- en vez de ser 2,4× más brusco en un monitor de 144Hz.
 local SMOOTH = {
-    TURN_MAX   = 55,    -- grados/frame de giro máx en calma
-    TURN_PANIC = 180,   -- grados/frame con urgencia máxima (sin límite práctico)
-    STEP_RISE  = 0.35,  -- rampa de aceleración del paso
-    STEP_FALL  = 0.18,  -- rampa de frenado (suelta suave, no corta de golpe)
+    TURN_MAX   = 3300,   -- grados/s de giro máx en calma        (era 55 /frame)
+    TURN_PANIC = 10800,  -- grados/s con urgencia máxima          (era 180 /frame: sin límite práctico)
+    RISE_TAU   = 0.04,   -- s · constante de tiempo al acelerar   (≡ rampa 0.35 /frame @60fps)
+    FALL_TAU   = 0.085,  -- s · constante de tiempo al frenar     (≡ rampa 0.18 /frame @60fps)
+}
+
+-- ════════════ CAPA DE COMPORTAMIENTO (v8.0) ════════════
+-- ⚠ REGLA DE ORO: estos flags NO ejecutan acciones y NO cambian el trigger de
+-- evasión (eso lo decide `nearestThreat`, la distancia real). Solo hacen dos cosas:
+--   1) PRIORIZAR: entre dos rutas igual de libres, el scoring prefiere la que no
+--      pasa cerca del que te atraviesa paredes persiguiéndote.
+--   2) INFORMAR: el pre-radio te dice QUÉ es lo que se acerca, no solo cuántos.
+-- Por eso un falso positivo acá es barato: te hace mirar más a alguien, nunca saltar.
+local BEHAV = {
+    SPEED_HI   = 45,    -- studs/s sostenidos = va más rápido de lo humano (walkspeed normal 16)
+    TP_DIST    = 40,    -- studs de salto en un frame = teleport (no lag: el dt se comprueba)
+    STALK_R    = 90,    -- studs dentro de los cuales cuenta como persecución
+    STALK_T    = 2.5,   -- s viniendo derecho a por ti de forma sostenida = te sigue
+    STALK_ALIGN= 0.9,   -- ★ qué tan alineado va su rumbo CONTIGO (0.9 ≈ 25° de tolerancia).
+                        -- Sin esto había falso positivo: cualquiera que camina en línea
+                        -- recta "cierra distancia" durante toda su aproximación, aunque
+                        -- solo vaya a pasar por al lado. Lo que delata al perseguidor es
+                        -- que CORRIGE el rumbo hacia ti: su velocidad te apunta y sigue
+                        -- apuntándote. El que solo cruza pierde la alineación al acercarse.
+    CLOSE_MIN  = 4,     -- studs/s mínimos de cierre para que cuente (ignora el paseo casual)
+    FLY_DROP   = 30,    -- studs sin suelo debajo = vuela
+    FALL_V     = 25,    -- studs/s de caída: por encima está cayendo, no volando
+    RAY_R      = 110,   -- solo lanzamos rayos de comportamiento a los que estén así de cerca
+    RAY_HZ     = 0.25,  -- s entre rayos POR jugador
+    RAY_BUDGET = 2,     -- ★ máx rayos de comportamiento por FRAME en total (perf: techo duro)
+    FLAG_HOLD  = 1.5,   -- s que un flag se mantiene tras dejar de verse (anti-parpadeo)
+    -- pesos de prioridad (multiplican la amenaza percibida SOLO en el scoring de rutas)
+    W_NOCLIP   = 0.5,
+    W_STALK    = 0.4,
+    W_TP       = 0.5,
+    W_SPEED    = 0.3,
+    W_FLY      = 0.15,
 }
 
 -- ════════════ RADIO DE PRE-DETECCIÓN (2º radio · SOLO informa) ════════════
@@ -249,9 +317,17 @@ local preAlert   = false         -- ¿hay alguien en el radio de pre-detección?
 local preCount   = 0
 local preNearest = math.huge
 local preClosing = 0             -- studs/s a los que te cierra el más cercano
+local preTag     = nil           -- ★ v8.0: QUÉ es lo más cercano ("noclip", "vuela"…)
 local preUntil   = 0
 local preparedDir = nil          -- ruta precalculada (semilla, no movimiento)
 local _lastArm    = 0
+
+-- ★ v8.0: sube acá arriba porque el recorte espacial de la capa de sensado necesita
+-- saber hasta dónde mira el pre-radio antes de decidir a quién procesar.
+local function preRadius()
+    local base = activeMode and modeSafeDistance(activeMode) or ANCHOR.CLEAR_DIST
+    return math.max(PRE.MIN, base + PRE.EXTRA)
+end
 
 -- ════════════ DISCORD (logo NX) ════════════
 local DISCORD_INVITE = "https://discord.gg/JgsW2M6322"   -- tu invite (se copia + abre en la app)
@@ -417,19 +493,38 @@ local function updateRing(root)
     if _ringGlow then _ringGlow.CFrame = cf end
 end
 
--- ════════════ CACHE POR FRAME (perf) ════════════
--- _others[i] = { p = Vector3 predicha, v = Vector3 horizontal, bias = número }
---   bias = penalización de distancia por altura (filtro vertical suave). Se SUMA a la
---   distancia medida: un jugador muy por debajo "cuenta" como si estuviera lejísimos.
+-- ════════════ CAPA DE SENSADO · TRACKS (v8.0) ════════════
+-- Sustituye al `_lastSeen` suelto de v7.x por un track con memoria corta por jugador.
+-- Qué gana:
+--   · la parte del personaje va CACHEADA → se acabó el GetDescendants() por frame
+--   · la velocidad se estima contra una muestra con timestamp propio → funciona a
+--     cualquier fps (v7.x se rompía por encima de 120)
+--   · cada track arrastra sus flags de comportamiento entre frames
+--
+-- _tracks[player] = {
+--   char, part      -- refs cacheadas (part se re-resuelve solo si se pierde)
+--   pos, vel        -- último estado bueno (vel estable: replicada o estimada)
+--   basePos, baseT  -- muestra base para derivar velocidad
+--   lastT           -- último frame en que se le vio DE VERDAD (0 = nunca)
+--   flags, threat   -- comportamiento (no mueven nada: priorizan e informan)
+--   closingT        -- s acumulados cerrándote distancia (stalking)
+--   nextRay         -- throttle propio del rayo de comportamiento
+-- }
+--
+-- _others[i] = { p = predicha, r = real, v = horizontal, bias, threat, flags, ghost }
+--   bias   = penalización de distancia por altura (filtro vertical). Se SUMA a la
+--            distancia: alguien muy por debajo "cuenta" como si estuviera lejísimos.
+--   threat = multiplicador de prioridad (SOLO lo usa el scoring de rutas).
 local _excludeList = {}
-local _others      = {}
-local _lastSeen    = {}   -- [player] = { raw = Vector3, v = Vector3, t = os.clock() }
+local _others      = {}   -- ★ v8.0: solo los RELEVANTES (recortados por scanRadius)
+local _tracks      = {}   -- [player] = track
+local _rayLeft     = 0    -- presupuesto de rayos de comportamiento que queda este frame
 local _rayParams   = RaycastParams.new()
 _rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 -- Busca la mejor parte localizable del personaje (aunque esté invisible/oculto).
 -- Prioridad: HumanoidRootPart > Head > (deep scan) cualquier BasePart.
-local function getCharPart(char)
+local function resolveCharPart(char)
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if hrp and hrp:IsA("BasePart") then return hrp end
     local head = char:FindFirstChild("Head")
@@ -440,6 +535,26 @@ local function getCharPart(char)
         end
     end
     return nil
+end
+
+-- ★ v8.0: la parte queda cacheada en el track. El deep scan (GetDescendants aloca una
+-- tabla entera) pasa de correr CADA FRAME —por cada jugador sin HRP/Head— a correr
+-- solo cuando la parte se pierde de verdad. IsDescendantOf cubre el respawn.
+local function getCharPart(tr, char)
+    local p = tr.part
+    if p and p.Parent and p:IsDescendantOf(char) then return p end
+    p = resolveCharPart(char)
+    tr.part = p
+    return p
+end
+
+local function getTrack(plr)
+    local tr = _tracks[plr]
+    if not tr then
+        tr = { flags = {}, threat = 1, closingT = 0, nextRay = 0, lastT = 0 }
+        _tracks[plr] = tr
+    end
+    return tr
 end
 
 -- ★ v7.1 · CAZA-HUÉRFANOS: personajes reparentados fuera de plr.Character.
@@ -477,9 +592,9 @@ local function findOrphanChar(name)
 end
 
 -- Lectura cruda: posición real + velocidad real (sin predicción todavía).
-local function readChar(char)
-    local part = getCharPart(char)
-    if part then return part.Position, part.AssemblyLinearVelocity or Vector3.zero end
+local function readChar(tr, char)
+    local part = getCharPart(tr, char)
+    if part then return part.Position, part.AssemblyLinearVelocity end
     if DETECT.USE_PIVOT then
         local ok, piv = pcall(function() return char:GetPivot().Position end)
         if ok and piv then return piv, nil end
@@ -487,20 +602,36 @@ local function readChar(char)
     return nil, nil
 end
 
--- ★ La velocidad replicada llega en 0 en muchos casos (justo con los que van rápido).
--- Fallback: la derivamos de cuánto se movió desde el frame anterior.
-local function estimateVel(plr, raw, vel, now)
-    if vel and vel.Magnitude >= 0.5 then return vel end
-    local ls = _lastSeen[plr]
-    if ls and ls.raw then
-        local dt = now - ls.t
-        if dt >= (1 / 120) and dt <= 0.5 then
-            local est = (raw - ls.raw) / dt
-            local m   = est.Magnitude
-            if m > 0.5 and m < DETECT.VEL_EST_MAX then return est end
-        end
+-- ★★ v8.0 · FIX: LA ESTIMACIÓN DE VELOCIDAD NO CORRÍA ARRIBA DE 120 FPS ★★
+-- La velocidad replicada llega en 0 en muchos casos (justo con los que van rápido),
+-- así que hay que derivarla del movimiento. v7.x la comparaba contra el FRAME
+-- ANTERIOR exigiendo dt >= 1/120 (0.0083s): en un monitor de 144Hz el dt de un frame
+-- es 0.0069 → la condición NUNCA se cumplía, la función devolvía Vector3.zero y esa
+-- gente quedaba sin predicción. Justo el caso que v7.0 quería resolver.
+-- Ahora la muestra base tiene su PROPIO timestamp y solo se refresca cada VEL_SAMPLE:
+-- el fps deja de importar, y entre refrescos devolvemos la última estimación buena
+-- (rumbo estable en vez de parpadeo).
+local function estimateVel(tr, raw, vel, now)
+    if vel and vel.Magnitude >= 0.5 then
+        tr.basePos, tr.baseT = raw, now   -- con velocidad buena, mantenemos la base fresca
+        return vel
     end
-    return vel or Vector3.zero
+    if not tr.basePos then
+        tr.basePos, tr.baseT = raw, now
+        return tr.vel or Vector3.zero
+    end
+    local dt = now - tr.baseT
+    if dt < DETECT.VEL_SAMPLE then
+        return tr.vel or Vector3.zero      -- todavía no toca remuestrear
+    end
+    local est = Vector3.zero
+    if dt <= 0.5 then                      -- muestra vieja => no inventamos rumbo
+        local e = (raw - tr.basePos) / dt
+        local m = e.Magnitude
+        if m > 0.5 and m < DETECT.VEL_EST_MAX then est = e end
+    end
+    tr.basePos, tr.baseT = raw, now
+    return est
 end
 
 -- ★ Predicción ADAPTATIVA: la anticipación crece con la velocidad a la que te cierra.
@@ -529,90 +660,208 @@ local function predictPos(raw, vel, myPos)
     return raw + pred
 end
 
--- ★ v7.1 · Filtro vertical ASIMÉTRICO. dy = otherY - myY (>0 = él está arriba tuyo).
---   · dy < 0 (él ABAJO): filtro clásico Air Walk. A partir de VERT_DOWN, no cuenta.
---   · dy > 0 (él ARRIBA): techo altísimo (VERT_UP). Los flyers/exploiters SÍ cuentan.
--- En la zona de fade se desvanece progresivo (nada de parpadeos al subir/bajar).
+-- ★★ v8.0 · Filtro vertical ASIMÉTRICO (revisado). dy = otherY - myY (>0 = él arriba).
+--   · dy < 0 (él ABAJO): corte DURO. Es la razón de ser del filtro: con Air Walk vuelas
+--     y los del suelo se leerían como amenaza. A partir de VERT_DOWN no cuentan, con
+--     fade para que no parpadeen al subir/bajar.
+--   · dy > 0 (él ARRIBA): PROGRESIVO, no escalón. v7.1 devolvía bias 0 hasta 210 studs
+--     y, como la distancia se mide en XZ, un flyer 100 studs sobre tu cabeza medía
+--     0 studs → evasión permanente contra alguien inalcanzable (y con el suelo duro
+--     usando la misma métrica, además te arrastraba). Ahora la altura pesa 1:1 desde
+--     VERT_UP_SOFT: a 10 studs cuenta entero, a 100 cuenta como 75 studs más lejos.
+--     El corte a nil en VERT_UP ya no da salto: a esa altura el bias (225) lo dejó
+--     fuera de cualquier radio hace rato.
 local function verticalBias(dy)
     if dy >= 0 then
-        local soft = DETECT.VERT_UP - DETECT.VERT_UP_FADE
-        if dy <= soft then return 0 end
         if dy >= DETECT.VERT_UP then return nil end
-        return ((dy - soft) / DETECT.VERT_UP_FADE) * 400
-    else
-        local ady  = -dy
-        local soft = DETECT.VERT_DOWN - DETECT.VERT_DOWN_FADE
-        if ady <= soft then return 0 end
-        if ady >= DETECT.VERT_DOWN then return nil end
-        return ((ady - soft) / DETECT.VERT_DOWN_FADE) * 400
+        return math.max(0, dy - DETECT.VERT_UP_SOFT)
     end
+    local ady  = -dy
+    local soft = DETECT.VERT_DOWN - DETECT.VERT_DOWN_FADE
+    if ady <= soft then return 0 end
+    if ady >= DETECT.VERT_DOWN then return nil end
+    return ((ady - soft) / DETECT.VERT_DOWN_FADE) * 400
+end
+
+-- ════════════ CAPA DE COMPORTAMIENTO (v8.0) ════════════
+-- ⚠ Nada de acá mueve al personaje ni cambia cuándo se evade. Devuelve la velocidad
+-- de cierre (que el pre-radio reutiliza) y deja los flags + `threat` en el track.
+local function updateBehavior(tr, raw, vel, myPos, dt, now, jumped)
+    local f = tr.flags
+
+    f.speeding = vel.Magnitude > BEHAV.SPEED_HI
+
+    if jumped then tr.tpUntil = now + BEHAV.FLAG_HOLD end
+    f.teleport = now < (tr.tpUntil or 0)
+
+    -- stalking: viene DERECHO a por vos de forma sostenida. No basta con que "cierre
+    -- distancia" (eso lo hace cualquiera que camine en tu dirección general durante su
+    -- aproximación): pedimos además que su rumbo te apunte, que es lo que hace un
+    -- perseguidor de verdad. Sube con dt y baja al doble de rápido: cuesta ganárselo,
+    -- se pierde rápido.
+    local toMe    = myPos - raw
+    local d       = toMe.Magnitude
+    local closing = (d > 0.1) and vel:Dot(toMe.Unit) or 0
+    if closing > BEHAV.CLOSE_MIN and d < BEHAV.STALK_R
+       and closing > vel.Magnitude * BEHAV.STALK_ALIGN then
+        tr.closingT = math.min(tr.closingT + dt, BEHAV.STALK_T * 2)
+    else
+        tr.closingT = math.max(tr.closingT - dt * 2, 0)
+    end
+    f.stalking = tr.closingT >= BEHAV.STALK_T
+
+    -- noclip + flying cuestan raycast → presupuesto por frame + solo los cercanos +
+    -- throttle por jugador. Con RAY_BUDGET=2 el techo es de 2 rayos/frame pase lo que
+    -- pase: los tracks se van turnando solos vía nextRay.
+    if d < BEHAV.RAY_R and now >= tr.nextRay and _rayLeft > 0 then
+        _rayLeft   = _rayLeft - 1
+        tr.nextRay = now + BEHAV.RAY_HZ
+
+        -- ¿hay geometría del mapa entre él y vos y aun así te cierra? → atraviesa paredes.
+        -- (_rayParams excluye a TODOS los personajes: el rayo solo puede pegar en mapa)
+        if closing > BEHAV.CLOSE_MIN and Workspace:Raycast(raw, toMe, _rayParams) then
+            tr.ncUntil = now + BEHAV.FLAG_HOLD
+        end
+        -- ¿nada debajo suyo y no está cayendo? → vuela
+        local below = Workspace:Raycast(raw, Vector3.new(0, -BEHAV.FLY_DROP, 0), _rayParams)
+        if below == nil and vel.Y > -BEHAV.FALL_V then tr.flyUntil = now + BEHAV.FLAG_HOLD end
+    end
+    -- los tres caducan solos: si el presupuesto de rayos no le da turno a este track
+    -- durante un rato, sus flags se apagan en vez de quedarse pegados para siempre
+    f.noclip = now < (tr.ncUntil  or 0)
+    f.flying = now < (tr.flyUntil or 0)
+
+    local t = 1
+    if f.noclip   then t = t + BEHAV.W_NOCLIP end
+    if f.stalking then t = t + BEHAV.W_STALK  end
+    if f.teleport then t = t + BEHAV.W_TP     end
+    if f.speeding then t = t + BEHAV.W_SPEED  end
+    if f.flying   then t = t + BEHAV.W_FLY    end
+    tr.threat = t
+
+    return closing
+end
+
+-- Etiqueta corta del comportamiento, para el pre-radio. Solo texto: no mueve nada.
+local function describeFlags(o)
+    if o.ghost then return "invisible" end
+    local f = o.flags
+    if not f then return nil end
+    if f.noclip   then return "noclip"   end
+    if f.teleport then return "teleport" end
+    if f.stalking then return "te sigue" end
+    if f.speeding then return "veloz"    end
+    if f.flying   then return "vuela"    end
+    return nil
 end
 
 -- p = posición ANTICIPADA (para medir amenaza ahora mismo)
 -- r = posición REAL    (para proyectar rutas a futuro: si no, se predice dos veces
 --                       y el scoring cree que el atacante ya pasó de largo)
-local function pushOther(list, pos, raw, vel, myPos)
+local function pushOther(list, pos, raw, vel, myPos, tr, ghost)
     local bias = verticalBias(pos.Y - myPos.Y)
     if not bias then return end   -- demasiada altura de diferencia: ni es amenaza ni la buscamos
     list[#list + 1] = {
-        p    = pos,
-        r    = raw or pos,
-        v    = vel and Vector3.new(vel.X, 0, vel.Z) or Vector3.zero,
-        bias = bias,
+        p      = pos,
+        r      = raw or pos,
+        v      = vel and Vector3.new(vel.X, 0, vel.Z) or Vector3.zero,
+        bias   = bias,
+        threat = tr and tr.threat or 1,
+        flags  = tr and tr.flags or nil,
+        ghost  = ghost or false,
     }
 end
 
-local function refreshFrameCache(myPos)
-    table.clear(_excludeList)
-    table.clear(_others)
-    local now = os.clock()
+-- ★ v8.0 · RECORTE ESPACIAL: hasta dónde vale la pena procesar.
+-- v7.x metía a los 40 jugadores del servidor en _others y después puntuaba 16
+-- direcciones × 2 sondas contra TODOS, cada frame. Acá se decide una sola vez quién
+-- puede llegar a importar. Si estás anclado se suma tu distancia al ancla, porque
+-- computeAnchorTarget mide desde `home`, no desde vos.
+local function scanRadius(myPos)
+    local r = ANCHOR.CLEAR_DIST
+    if activeMode then r = math.max(r, modeSafeDistance(activeMode) * SMART.EXIT_FACTOR) end
+    if preOn      then r = math.max(r, preRadius()) end
+    r = r + DETECT.SCAN_MARGIN
+    if anchored and home then
+        r = r + Vector3.new(myPos.X - home.X, 0, myPos.Z - home.Z).Magnitude
+    end
+    return r
+end
 
+local function refreshFrameCache(myPos, dt, now)
+    table.clear(_others)
+    _rayLeft = BEHAV.RAY_BUDGET
+
+    -- ── PASE 1: lista de exclusión de raycasts ──
+    -- Va primero y aparte: la capa de comportamiento lanza rayos DENTRO del pase 2 y
+    -- necesita el filtro ya puesto. Si no, sus rayos chocarían contra los propios
+    -- jugadores y todo el mundo parecería estar detrás de una pared (noclip everywhere).
+    table.clear(_excludeList)
     for _, plr in ipairs(Players:GetPlayers()) do
         local ch = plr.Character
         -- ★ v7.1: si su Character = nil, intentamos rescatarlo del Workspace
         if not ch and plr ~= LocalPlayer and DETECT.ORPHAN_SCAN then
             ch = findOrphanChar(plr.Name)
         end
+        if plr ~= LocalPlayer then getTrack(plr).char = ch end
         if ch then _excludeList[#_excludeList + 1] = ch end
+    end
+    _rayParams.FilterDescendantsInstances = _excludeList
 
-        if plr ~= LocalPlayer then
-            local dead = false
-            if DETECT.SKIP_DEAD and ch then
-                local hum = ch:FindFirstChildOfClass("Humanoid")
-                dead = (hum ~= nil and hum.Health <= 0)
-            end
+    -- ── PASE 2: tracks + comportamiento + recorte ──
+    local rScan2 = scanRadius(myPos) ^ 2   -- al cuadrado: nos ahorramos la raíz por jugador
 
-            if not dead then
-                -- ch == nil (te esconden el Character entero) cae al rastro de abajo
-                local raw, vel
-                if ch then raw, vel = readChar(ch) end
-                if raw then
-                    vel = estimateVel(plr, raw, vel, now)
-                    pushOther(_others, predictPos(raw, vel, myPos), raw, vel, myPos)
-                    _lastSeen[plr] = { raw = raw, v = vel, t = now }
+    for plr, tr in pairs(_tracks) do
+        -- Purga aquí mismo (Lua permite poner a nil la clave que estás visitando).
+        -- Antes de v8.0 la purga iba en un loop aparte DESPUÉS de procesar, así que el
+        -- que se acababa de ir contaba como amenaza un frame de más con su última pose.
+        if not plr.Parent or (tr.lastT > 0 and (now - tr.lastT) > DETECT.HOLD_TIME + 5) then
+            _tracks[plr] = nil
+            continue
+        end
+
+        local ch   = tr.char
+        local dead = false
+        if DETECT.SKIP_DEAD and ch then
+            local hum = ch:FindFirstChildOfClass("Humanoid")
+            dead = (hum ~= nil and hum.Health <= 0)
+        end
+
+        if not dead then
+            -- ch == nil (te esconden el Character entero) cae al rastro de abajo
+            local raw, vel
+            if ch then raw, vel = readChar(tr, ch) end
+
+            if raw then
+                local dx, dz = raw.X - myPos.X, raw.Z - myPos.Z
+                if (dx * dx + dz * dz) <= rScan2 then
+                    -- teleport: salto grande en un frame. El dt se comprueba para no
+                    -- confundirlo con un lag spike (ahí todos "saltan").
+                    local jumped = tr.pos and dt < 0.2
+                                   and (raw - tr.pos).Magnitude > BEHAV.TP_DIST or false
+                    vel = estimateVel(tr, raw, vel, now)
+                    updateBehavior(tr, raw, vel, myPos, dt, now, jumped)
+                    pushOther(_others, predictPos(raw, vel, myPos), raw, vel, myPos, tr, false)
                 else
-                    -- invisible/oculto este frame: seguimos su rastro con la última velocidad
-                    -- conocida (un invisible que corre no se congela en su última posición).
-                    local ls = _lastSeen[plr]
-                    if ls and (now - ls.t) <= DETECT.HOLD_TIME then
-                        local age   = now - ls.t
-                        local decay = 1 - (age / DETECT.HOLD_TIME)   -- la confianza cae con el tiempo
-                        local ghost = ls.raw + (ls.v or Vector3.zero) * math.min(age, DETECT.GHOST_MAX) * decay
-                        pushOther(_others, ghost, ghost, ls.v, myPos)
-                    end
+                    -- fuera del recorte: lo seguimos viendo (para que entre sin latencia
+                    -- cuando se acerque) pero no gastamos ni predicción ni rayos en él.
+                    vel = vel or Vector3.zero
+                    tr.closingT = 0
+                end
+                tr.pos, tr.vel, tr.lastT = raw, vel, now
+            elseif tr.lastT > 0 and tr.pos and (now - tr.lastT) <= DETECT.HOLD_TIME then
+                -- invisible/oculto este frame: seguimos su rastro con la última velocidad
+                -- conocida (un invisible que corre no se congela en su última posición).
+                local age   = now - tr.lastT
+                local decay = 1 - (age / DETECT.HOLD_TIME)   -- la confianza cae con el tiempo
+                local ghost = tr.pos + (tr.vel or Vector3.zero) * math.min(age, DETECT.GHOST_MAX) * decay
+                local dx, dz = ghost.X - myPos.X, ghost.Z - myPos.Z
+                if (dx * dx + dz * dz) <= rScan2 then
+                    pushOther(_others, ghost, ghost, tr.vel, myPos, tr, true)
                 end
             end
         end
     end
-
-    -- purga de memoria: jugadores que se fueron o caducaron
-    for plr, ls in pairs(_lastSeen) do
-        if (now - ls.t) > DETECT.HOLD_TIME or not plr.Parent then
-            _lastSeen[plr] = nil
-        end
-    end
-
-    _rayParams.FilterDescendantsInstances = _excludeList
 end
 
 local function findGround(pos)
@@ -631,13 +880,50 @@ local function resolveMove(myPos, pushVec)
     return myPos + pushVec, myPos.Y
 end
 
--- ════════════ MEDIDAS DE AMENAZA ════════════
--- Distancia efectiva al más cercano en un punto, mirando `t` segundos al futuro.
---   t = 0 -> amenaza AHORA: se mide contra la posición anticipada (o.p).
+-- ════════════ MEDIDAS · TRES MÉTRICAS, UNA POR PREGUNTA (v8.0) ════════════
+-- v7.x tenía UNA sola (XZ + bias) respondiendo a todo, y ahí nació el peor bug de la
+-- serie: el suelo duro preguntaba "¿me está tocando alguien?" y recibía una respuesta
+-- HORIZONTAL. Un flyer 100 studs sobre tu cabeza medía 0 studs → prioridad 0 → te
+-- arrastraba por el mapa sin haberte tocado jamás. El contacto es 3D; la amenaza no.
+
+-- (1) CONTACTO · distancia física REAL, con Y, sin bias ni pesos. Solo el suelo duro.
+--     Devuelve además el rumbo de salida, que es HORIZONTAL a propósito: no tocamos
+--     tu altura nunca (Air Walk). Si está justo encima/debajo, no hay rumbo XZ que
+--     dar → devuelve nil y el caller deja que el cerebro elija.
+local function nearest3D(pos)
+    local best, bestDir = math.huge, nil
+    for _, o in ipairs(_others) do
+        local off = pos - o.p
+        local m   = off.Magnitude
+        if m < best then
+            best    = m
+            bestDir = Vector3.new(off.X, 0, off.Z)
+        end
+    end
+    if bestDir and bestDir.Magnitude > 0.05 then bestDir = bestDir.Unit else bestDir = nil end
+    return best, bestDir
+end
+
+-- (2) AMENAZA · XZ + bias vertical. Decide SI evadís (y respeta tu Air Walk).
+--     Sin ponderar por comportamiento: un flag JAMÁS cambia el trigger.
+local function nearestThreat(pos)
+    local best = math.huge
+    for _, o in ipairs(_others) do
+        local m = Vector3.new(pos.X - o.p.X, 0, pos.Z - o.p.Z).Magnitude + o.bias
+        if m < best then best = m end
+    end
+    return best
+end
+
+-- (3) SCORING · como (2), proyectada `t` segundos y PONDERADA por comportamiento.
+--     Decide HACIA DÓNDE. Acá sí pesan los flags: dividir por threat hace que el
+--     noclipper que te persigue "ocupe" más espacio que el tipo parado, así que entre
+--     dos rutas igual de libres se elige la que no pasa cerca de él.
+--   t = 0 -> ahora mismo: contra la posición anticipada (o.p).
 --   t > 0 -> encuentro FUTURO: se proyecta desde la posición REAL (o.r), nunca desde
 --            la anticipada. Si no, la predicción se aplicaría dos veces y una ruta
 --            que te lleva contra el atacante puntuaría bien ("ya habrá pasado").
-local function nearestDistAt(pos, t)
+local function scoreAt(pos, t)
     local best = math.huge
     for _, o in ipairs(_others) do
         local ox, oz
@@ -647,29 +933,10 @@ local function nearestDistAt(pos, t)
         else
             ox, oz = o.p.X, o.p.Z
         end
-        local m = Vector3.new(pos.X - ox, 0, pos.Z - oz).Magnitude + o.bias
+        local m = (Vector3.new(pos.X - ox, 0, pos.Z - oz).Magnitude + o.bias) / o.threat
         if m < best then best = m end
     end
     return best
-end
-
-local function nearestPlayerDist(pos)
-    return nearestDistAt(pos, 0)
-end
-
--- Igual que nearestPlayerDist pero devuelve TAMBIÉN el rumbo de huida natural.
-local function nearestInfo(pos)
-    local best, bestDir = math.huge, nil
-    for _, o in ipairs(_others) do
-        local off = Vector3.new(pos.X - o.p.X, 0, pos.Z - o.p.Z)
-        local m   = off.Magnitude
-        local eff = m + o.bias
-        if eff < best then
-            best    = eff
-            bestDir = (m > 0.05) and off.Unit or nil
-        end
-    end
-    return best, bestDir
 end
 
 -- ★ Suavizado de rumbo: limita cuántos grados puedes girar en un frame.
@@ -686,42 +953,63 @@ local function limitTurn(prev, want, maxDeg)
     return (r.Magnitude > 0.001) and r.Unit or want
 end
 
+-- ★ v8.0 · buffers reusados: las 16 direcciones son fijas y la tabla de puntajes se
+-- recicla. v7.x alocaba 16 Vector3 + 17 tablas en CADA llamada (y se llama varias
+-- veces por frame) → basura constante para el GC, que en Roblox se paga en hitches.
+local _dirs = {}
+for i = 0, SMART.DIRS - 1 do
+    local a = (i / SMART.DIRS) * math.pi * 2
+    _dirs[i + 1] = Vector3.new(math.cos(a), 0, math.sin(a))
+end
+local _scored = {}
+for i = 1, SMART.DIRS do _scored[i] = { dir = _dirs[i], score = 0 } end
+
 -- Muestrea SMART.DIRS direcciones y elige la mejor ruta de escape:
 --   · puntúa qué tan lejos te deja de TODOS (no solo del más cercano)
---   · ★ v7.0: puntúa a MEDIO y FINAL de la ruta, con los otros ya movidos (predicción):
---     una ruta que hoy parece libre pero te cruza con el que viene, ahora puntúa mal
+--   · puntúa a MEDIO y FINAL de la ruta, con los otros ya movidos (predicción):
+--     una ruta que hoy parece libre pero te cruza con el que viene, puntúa mal
+--   · ★ v8.0: `look` y horizonte hablan del MISMO instante (ver abajo)
 --   · bonus a la repulsión natural (seed) y al rumbo anterior (anti-zigzag)
 --   · de mejor a peor, la primera sin pared gana (máx WALL_TRIES raycasts)
--- Devuelve dir, clear. clear=false => todo bloqueado, el caller activa noclip.
-local function bestEscapeDir(myPos, seed, stepLen)
-    local look   = math.max(stepLen * SMART.LOOK_MULT, 6)
-    local hz     = SMART.HORIZON
-    local seedU  = (seed and seed.Magnitude > 0.05) and seed.Unit or nil
-    local scored = {}
-    for i = 0, SMART.DIRS - 1 do
-        local a   = (i / SMART.DIRS) * math.pi * 2
-        local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+-- `speed` en studs/s. Devuelve dir, clear. clear=false => todo bloqueado, el caller
+-- activa noclip.
+local function bestEscapeDir(myPos, seed, speed)
+    -- ★ v8.0 · COHERENCIA TEMPORAL: v7.x proyectaba TU ruta 4 pasos (≈0.07s a 60fps)
+    -- pero movía a los otros SMART.HORIZON (0.35s). Las dos mitades del scoring
+    -- comparaban instantes distintos, así que "dónde estaré yo" y "dónde estarán
+    -- ellos" no eran el mismo momento. Ahora `look` manda y el horizonte se deriva
+    -- de él: si vas a 300 studs/s, 40 studs SON 0.13s, y con eso se mueven ellos.
+    local look  = math.clamp(speed * SMART.HORIZON, 8, SMART.LOOK_MAX)
+    local hz    = look / math.max(speed, 1)
+    local seedU = (seed and seed.Magnitude > 0.05) and seed.Unit or nil
+
+    for i = 1, SMART.DIRS do
+        local dir = _dirs[i]
         -- el peor momento de la ruta manda: así se descartan las que te cruzan por delante
-        local sMid = nearestDistAt(myPos + dir * (look * 0.5), hz * 0.5)
-        local sEnd = nearestDistAt(myPos + dir * look,          hz)
+        local sMid = scoreAt(myPos + dir * (look * 0.5), hz * 0.5)
+        local sEnd = scoreAt(myPos + dir * look,          hz)
         local s    = math.min(sMid, sEnd)
         if seedU         then s = s + dir:Dot(seedU) * SMART.SEED_W end
         if lastEscapeDir then s = s + dir:Dot(lastEscapeDir) * SMART.SMOOTH_W end
-        scored[#scored + 1] = { dir = dir, score = s }
+        local e = _scored[i]
+        e.dir, e.score = dir, s
     end
-    table.sort(scored, function(x, y) return x.score > y.score end)
-    for i = 1, math.min(SMART.WALL_TRIES, #scored) do
-        if pathClear(myPos, scored[i].dir) then return scored[i].dir, true end
+    table.sort(_scored, function(x, y) return x.score > y.score end)
+    for i = 1, math.min(SMART.WALL_TRIES, SMART.DIRS) do
+        if pathClear(myPos, _scored[i].dir) then return _scored[i].dir, true end
     end
-    return scored[1] and scored[1].dir or nil, false
+    return _scored[1] and _scored[1].dir or nil, false
 end
 
 -- ★ Paso mínimo a lo largo de `dir` que te deja a `need` studs de todos.
 -- Es el corazón del suelo duro: no "empuja y reza", calcula lo que hace falta.
+-- ★ v8.0: mide en 3D (es contacto físico) y NO se escala por dt — no es una
+-- velocidad sino una corrección de posición: "cuánto me falta para salir" es
+-- geométrico, igual a 30 que a 144 fps, y se auto-limita (al salir, deja de dispararse).
 local function pushOutStep(myPos, dir, need)
     for k = 1, CONTACT.PROBES do
         local t = (k / CONTACT.PROBES) * CONTACT.MAX_STEP
-        if nearestDistAt(myPos + dir * t, 0) >= need then return t end
+        if nearest3D(myPos + dir * t) >= need then return t end
     end
     return CONTACT.MAX_STEP
 end
@@ -732,7 +1020,7 @@ local function computeAnchorTarget()
         clear = math.max(clear, math.min(modeSafeDistance(activeMode), ANCHOR.RADIUS))
     end
 
-    if nearestPlayerDist(home) >= clear then
+    if nearestThreat(home) >= clear then
         return home, false
     end
 
@@ -751,29 +1039,45 @@ local function computeAnchorTarget()
         if shift.Magnitude > ANCHOR.RADIUS then shift = shift.Unit * ANCHOR.RADIUS end
         cand = Vector3.new(home.X + shift.X, home.Y, home.Z + shift.Z)
     end
-    if nearestPlayerDist(cand) >= clear * 0.75 then
+    if nearestThreat(cand) >= clear * 0.75 then
         return cand, true
     end
 
-    local best, bestScore = cand, nearestPlayerDist(cand)
+    local best, bestScore = cand, nearestThreat(cand)
     local r = math.min(clear, ANCHOR.RADIUS)
     for i = 0, 11 do
         local a = (i / 12) * math.pi * 2
         local p = Vector3.new(home.X + math.cos(a) * r, home.Y, home.Z + math.sin(a) * r)
-        local score = nearestPlayerDist(p)
+        local score = nearestThreat(p)
         if score > bestScore then best, bestScore = p, score end
     end
     return best, true
 end
 
 -- ════════════ NO CLIP AUTO (atravesar paredes solo cuando topas) ════════════
+-- ★ v8.0: las partes propias van cacheadas. v7.x llamaba char:GetDescendants() en
+-- CADA frame de noclip (una tabla nueva por frame, y el noclip puede durar segundos).
+-- El TTL corto cubre lo que aparezca después (accesorios, tools).
+local _myParts, _myPartsChar, _myPartsT = {}, nil, 0
+local function myParts(char)
+    local now = os.clock()
+    if _myPartsChar ~= char or (now - _myPartsT) > 2 then
+        table.clear(_myParts)
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then _myParts[#_myParts + 1] = p end
+        end
+        _myPartsChar, _myPartsT = char, now
+    end
+    return _myParts
+end
+
 local function noclipStep()
     if not sessionAlive() then return end
     local char = LocalPlayer.Character
     if not char then return end
     if os.clock() < noclipUntil then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") and p.CanCollide then
+        for _, p in ipairs(myParts(char)) do
+            if p.Parent and p.CanCollide then
                 _noclipForced[p] = true
                 p.CanCollide = false
             end
@@ -791,12 +1095,18 @@ end
 -- No negocia, no suaviza: si alguien entra en HARD_R, sales. Devuelve true si actuó.
 local function hardFloorStep(root, myPos)
     if not (activeMode or anchored) then return false end
-    local d, away = nearestInfo(myPos)
+    -- ★★ v8.0 · MÉTRICA 3D REAL ★★
+    -- Acá vivía el peor bug de v7.1: esto preguntaba "¿me está tocando alguien?" con
+    -- una medida HORIZONTAL, así que un flyer 100 studs sobre tu cabeza contestaba
+    -- "sí, a 0 studs" y esta función —prioridad 0, no negocia— te arrastraba por el
+    -- mapa activando noclip, sin que nadie te hubiera tocado nunca. El contacto es 3D.
+    local d, away = nearest3D(myPos)
     if d >= CONTACT.HARD_R then return false end
 
     local need = CONTACT.HARD_R + CONTACT.BUFFER
-    -- ruta inteligente incluso en emergencia (si hay pared, la atravesamos)
-    local dir, clear = bestEscapeDir(myPos, away, need)
+    -- ruta inteligente incluso en emergencia (si hay pared, la atravesamos).
+    -- `away` puede venir nil si está justo encima/debajo: el cerebro elige solo.
+    local dir, clear = bestEscapeDir(myPos, away, CONTACT.ESCAPE_V)
     dir = dir or away
     if not dir then return false end
     if not clear then noclipUntil = os.clock() + 0.3 end
@@ -807,22 +1117,19 @@ local function hardFloorStep(root, myPos)
                 * CFrame.Angles(0, math.rad(root.Orientation.Y), 0)
 
     -- deja el cerebro alineado con lo que acaba de pasar (sin latigazo al frame siguiente)
-    evading      = true
+    evading       = true
     lastEscapeDir = dir
-    stepSmooth   = math.min(step, CONTACT.MAX_STEP)
+    speedSmooth   = CONTACT.ESCAPE_V
     return true
 end
 
 -- ════════════ RADIO DE PRE-DETECCIÓN (solo lectura + preparación) ════════════
 -- ⚠ Este bloque NO mueve al personaje. Nunca. Solo observa y deja la ruta lista.
-local function preRadius()
-    local base = activeMode and modeSafeDistance(activeMode) or ANCHOR.CLEAR_DIST
-    return math.max(PRE.MIN, base + PRE.EXTRA)
-end
-
-local function updatePreDetect(myPos)
+-- (preRadius() se define arriba: el recorte espacial lo necesita antes que esto)
+local function updatePreDetect(myPos, now)
     if not preOn then
-        preAlert, preCount, preNearest, preClosing, preparedDir = false, 0, math.huge, 0, nil
+        preAlert, preCount, preNearest, preClosing, preTag, preparedDir =
+            false, 0, math.huge, 0, nil, nil
         return
     end
 
@@ -830,6 +1137,7 @@ local function updatePreDetect(myPos)
     local count   = 0
     local nearest = math.huge
     local closing = 0
+    local tag     = nil
     local seed    = Vector3.zero
 
     for _, o in ipairs(_others) do
@@ -844,11 +1152,11 @@ local function updatePreDetect(myPos)
                 nearest = eff
                 -- velocidad a la que te cierra (proyección de su velocidad sobre la línea hacia ti)
                 closing = (off.Magnitude > 0.05) and o.v:Dot(off.Unit) or 0
+                tag     = describeFlags(o)   -- ★ v8.0: QUÉ es, no solo cuántos hay
             end
         end
     end
 
-    local now = os.clock()
     if count > 0 then
         preUntil = now + PRE.HOLD          -- anti-parpadeo al rozar el borde del radio
         preAlert = true
@@ -860,6 +1168,7 @@ local function updatePreDetect(myPos)
     preCount   = count
     preNearest = nearest
     preClosing = closing
+    preTag     = tag
 
     -- ★ Preparación (no acción): deja la ruta ya resuelta para que el radio principal
     -- reaccione en el frame 0 en vez de gastar el primer frame decidiendo.
@@ -867,14 +1176,14 @@ local function updatePreDetect(myPos)
     if (activeMode or anchored) and preAlert and count > 0 and not evading
        and (now - _lastArm) >= PRE.ARM_HZ then
         _lastArm = now
-        local step = activeMode and MODES[activeMode].MAX_STEP or ANCHOR.MAX_STEP
-        local dir  = bestEscapeDir(myPos, seed, step)
-        preparedDir = dir
+        local spd = activeMode and MODES[activeMode].MAX_SPEED or ANCHOR.MAX_SPEED
+        preparedDir = bestEscapeDir(myPos, seed, spd)
     end
 end
 
 -- ════════════ BUCLE PRINCIPAL ════════════
-local function mainHeartbeat()
+local _lastFrameT = os.clock()
+local function mainHeartbeat(dtRaw)
     if not sessionAlive() then selfDestruct() return end
     pcall(function()
         local char = LocalPlayer.Character
@@ -884,9 +1193,18 @@ local function mainHeartbeat()
         local myPos = root.Position
         local vel   = root.AssemblyLinearVelocity
 
-        refreshFrameCache(myPos)
-        updateRing(root)        -- anillo de rango: sigue al personaje (barato: 1 CFrame/frame)
-        updatePreDetect(myPos)  -- 2º radio: informa y prepara, NO mueve
+        -- ★★ v8.0 · dt REAL Y ACOTADO ★★
+        -- Todo el movimiento pasa a studs/segundo. v7.x movía studs/FRAME: el mismo
+        -- tool corría a 150 studs/s en un móvil de 30fps y a 720 en un PC de 144, así
+        -- que ninguna constante servía para ambos. El techo (DT_MAX) evita que un lag
+        -- spike se traduzca en un salto de 150 studs en un frame.
+        local now = os.clock()
+        local dt  = math.clamp(dtRaw or (now - _lastFrameT), 1/240, DT_MAX)
+        _lastFrameT = now
+
+        refreshFrameCache(myPos, dt, now)
+        updateRing(root)             -- anillo de rango: sigue al personaje (barato: 1 CFrame/frame)
+        updatePreDetect(myPos, now)  -- 2º radio: informa y prepara, NO mueve
 
         -- ── BLINDAJE: SOLO cuando estas anclado (no estorbar fly/tp) ──
         if anchored and home then
@@ -933,9 +1251,10 @@ local function mainHeartbeat()
         if anchored and home then
             local target, _ = computeAnchorTarget()
 
-            local push = Vector3.new(target.X - myPos.X, 0, target.Z - myPos.Z)
+            local push    = Vector3.new(target.X - myPos.X, 0, target.Z - myPos.Z)
+            local maxStep = ANCHOR.MAX_SPEED * dt   -- ★ v8.0: studs/s → studs este frame
             if push.Magnitude < ANCHOR.DEADZONE then return end
-            if push.Magnitude > ANCHOR.MAX_STEP then push = push.Unit * ANCHOR.MAX_STEP end
+            if push.Magnitude > maxStep then push = push.Unit * maxStep end
 
             if not pathClear(myPos, push.Unit) then
                 noclipUntil = os.clock() + 0.25
@@ -951,13 +1270,15 @@ local function mainHeartbeat()
         if not activeMode then return end
         local config  = MODES[activeMode]
         local safeD   = modeSafeDistance(activeMode)   -- More sigue el slider del Radio
-        local nearest = nearestPlayerDist(myPos)
+        -- ★ v8.0: el trigger usa la métrica de AMENAZA pura (XZ + bias vertical), sin
+        -- ponderar por comportamiento. Los flags no deciden SI evadís — solo hacia dónde.
+        local nearest = nearestThreat(myPos)
 
         -- histéresis: al evadir seguimos hasta safe*EXIT_FACTOR (no titubea en el borde)
         local trigger = evading and (safeD * SMART.EXIT_FACTOR) or safeD
         if nearest >= trigger then
-            evading, lastEscapeDir, stuckFrames, lastFramePos = false, nil, 0, nil
-            stepSmooth = 0
+            evading, lastEscapeDir, stuckTime, lastFramePos = false, nil, 0, nil
+            speedSmooth = 0
             return
         end
 
@@ -975,55 +1296,65 @@ local function mainHeartbeat()
         local urgency = math.clamp(
             (panicAt - nearest) / math.max(panicAt - CONTACT.HARD_R, 0.1), 0, 1)
 
-        -- repulsión clásica: semilla de dirección + medida de fuerza
+        -- repulsión clásica: semilla de dirección + medida de fuerza (ahora en studs/s)
         local totalPush = Vector3.zero
         for _, o in ipairs(_others) do
             local flat = Vector3.new(myPos.X - o.p.X, 0, myPos.Z - o.p.Z)
             local dist = flat.Magnitude + o.bias
             if dist < trigger and flat.Magnitude > 0.1 then
-                totalPush = totalPush + flat.Unit * ((1 - dist / trigger) * config.MAX_STEP)
+                totalPush = totalPush + flat.Unit * ((1 - dist / trigger) * config.MAX_SPEED)
             end
         end
 
-        -- fuerza del paso: aunque la repulsión se cancele (flanqueado) hay que moverse
-        local wantStep = math.min(totalPush.Magnitude, config.MAX_STEP)
-        if wantStep < 0.35 then
-            wantStep = math.max(0.35, (1 - nearest / trigger) * config.MAX_STEP)
+        -- velocidad deseada: aunque la repulsión se cancele (flanqueado) hay que moverse.
+        -- MIN_V (21 studs/s) es el viejo mínimo de 0.35 studs/frame a 60fps.
+        local MIN_V = 21
+        local wantSpeed = math.min(totalPush.Magnitude, config.MAX_SPEED)
+        if wantSpeed < MIN_V then
+            wantSpeed = math.max(MIN_V, (1 - nearest / trigger) * config.MAX_SPEED)
         end
-        -- con urgencia alta el paso puede pasarse del MAX_STEP del modo: es lo que evita
-        -- que un corredor más rápido que tú te alcance.
+        -- con urgencia alta la velocidad puede pasarse del MAX_SPEED del modo: es lo que
+        -- evita que un corredor más rápido que tú te alcance.
         if urgency > 0 then
-            wantStep = wantStep + (CONTACT.MAX_STEP - wantStep) * (urgency * urgency)
+            wantSpeed = wantSpeed + (CONTACT.ESCAPE_V - wantSpeed) * (urgency * urgency)
         end
 
-        -- ★ rampa: acelera y frena progresivo (nada de saltos de 0 a full en 1 frame).
-        -- En urgencia la rampa se salta: la seguridad manda sobre la estética.
-        local rate = (wantStep > stepSmooth) and SMOOTH.STEP_RISE or SMOOTH.STEP_FALL
-        rate = rate + (1 - rate) * urgency
-        stepSmooth = stepSmooth + (wantStep - stepSmooth) * rate
-        local stepLen = math.max(stepSmooth, 0.35)
+        -- ★ rampa: acelera y frena progresivo (nada de saltos de 0 a full de golpe).
+        -- ★ v8.0: exponencial por constante de tiempo en vez de un factor por frame.
+        -- El viejo `x += (want-x) * 0.35` aplicaba 0.35 por FRAME, así que a 144fps la
+        -- rampa era 2,4× más rápida que a 60. Con tau + dt la curva es la misma en
+        -- cualquier máquina. En urgencia tau colapsa: la seguridad manda sobre la estética.
+        local tau = (wantSpeed > speedSmooth) and SMOOTH.RISE_TAU or SMOOTH.FALL_TAU
+        tau = math.max(tau * (1 - urgency), 1e-4)
+        speedSmooth = speedSmooth + (wantSpeed - speedSmooth) * (1 - math.exp(-dt / tau))
+
+        local moveSpeed = math.max(speedSmooth, MIN_V)
+        local stepLen   = moveSpeed * dt
 
         -- elegir la MEJOR ruta (no la más obvia): escapa de flanqueos, esquiva paredes
-        local dir, clear = bestEscapeDir(myPos, totalPush, stepLen)
+        local dir, clear = bestEscapeDir(myPos, totalPush, moveSpeed)
         if not dir then return end
         if not clear then
-            noclipUntil = os.clock() + 0.25
+            noclipUntil = now + 0.25
         end
 
         -- ★ giro limitado (anti-latigazo). El límite se abre con la urgencia.
-        local maxTurn = SMOOTH.TURN_MAX + (SMOOTH.TURN_PANIC - SMOOTH.TURN_MAX) * urgency
+        -- ★ v8.0: grados/s × dt = lo que puede girar ESTE frame (antes: grados/frame,
+        -- o sea 2,4× más latigazo en un monitor de 144Hz que en uno de 60).
+        local maxTurn = (SMOOTH.TURN_MAX + (SMOOTH.TURN_PANIC - SMOOTH.TURN_MAX) * urgency) * dt
         dir = limitTurn(lastEscapeDir, dir, maxTurn)
 
-        -- anti-atasco: ordenamos movernos pero seguimos en el mismo sitio
+        -- anti-atasco: ordenamos movernos pero seguimos en el mismo sitio.
+        -- ★ v8.0: se mide en SEGUNDOS (antes 6 frames = 0.1s a 60fps, 0.2s a 30, 0.04s a 144).
         if lastFramePos and (myPos - lastFramePos).Magnitude < stepLen * 0.25 then
-            stuckFrames = stuckFrames + 1
-            if stuckFrames >= SMART.STUCK_FRAMES then
-                noclipUntil   = os.clock() + 0.35
+            stuckTime = stuckTime + dt
+            if stuckTime >= SMART.STUCK_TIME then
+                noclipUntil   = now + 0.35
                 lastEscapeDir = nil     -- re-decidir ruta desde cero
-                stuckFrames   = 0
+                stuckTime     = 0
             end
         else
-            stuckFrames = 0
+            stuckTime = 0
         end
         lastFramePos  = myPos
         lastEscapeDir = dir
@@ -1032,11 +1363,12 @@ local function mainHeartbeat()
 
         -- ★ RED FINAL: si el destino calculado aún deja a alguien dentro del suelo duro,
         -- se alarga el paso lo justo para salir. El movimiento nunca termina en contacto.
+        -- (3D, igual que hardFloorStep: las dos puertas del contacto miden lo mismo)
         local need = CONTACT.HARD_R + CONTACT.BUFFER
-        if nearestDistAt(destPos, 0) < CONTACT.HARD_R then
+        if nearest3D(destPos) < CONTACT.HARD_R then
             local ext = pushOutStep(myPos, dir, need)
             destPos, finalY = resolveMove(myPos, dir * math.max(ext, stepLen))
-            noclipUntil = os.clock() + 0.25
+            noclipUntil = now + 0.25
         end
 
         root.CFrame = CFrame.new(destPos.X, finalY, destPos.Z)
@@ -1633,8 +1965,8 @@ buildUI = function(firstBuild)
 
     setActiveMode = function(modeKey)
         if activeMode == modeKey then activeMode = nil else activeMode = modeKey end
-        evading, lastEscapeDir, stuckFrames, lastFramePos = false, nil, 0, nil
-        stepSmooth = 0
+        evading, lastEscapeDir, stuckTime, lastFramePos = false, nil, 0, nil
+        speedSmooth = 0
         for _, e in ipairs(modeButtons) do
             e.setOn(activeMode == e.modeKey)
         end
@@ -1883,6 +2215,9 @@ buildUI = function(firstBuild)
         if preCount > 0 then
             txt = string.format("%d cerca · %d studs", preCount, math.floor(math.min(preNearest, 9999)))
             if preClosing > 8 then txt = txt .. " ↓" end   -- viene hacia ti
+            -- ★ v8.0: qué es lo más cercano (noclip/teleport/te sigue/veloz/vuela/invisible).
+            -- Solo texto: la capa de comportamiento no mueve nada.
+            if preTag then txt = txt .. " · " .. preTag end
         else
             txt = "Vigilando… · " .. math.floor(preRadius()) .. " studs"
         end
@@ -2003,10 +2338,11 @@ ensureLoops()
 -- reset al respawnear (núcleo: resetea lógica y resincroniza la UI si existe)
 track(LocalPlayer.CharacterAdded:Connect(function()
     anchored, home, lastPos, safeY, lastSafePos = false, nil, nil, nil, nil
-    evading, lastEscapeDir, stuckFrames, lastFramePos = false, nil, 0, nil
-    stepSmooth = 0
-    preAlert, preCount, preNearest, preClosing, preparedDir = false, 0, math.huge, 0, nil
-    table.clear(_lastSeen)
+    evading, lastEscapeDir, stuckTime, lastFramePos = false, nil, 0, nil
+    speedSmooth = 0
+    preAlert, preCount, preNearest, preClosing, preTag, preparedDir =
+        false, 0, math.huge, 0, nil, nil
+    table.clear(_tracks)   -- ★ v8.0: los tracks se rehacen solos en el próximo frame
     syncUI()
 end))
 
@@ -2030,4 +2366,4 @@ task.spawn(function()
     end
 end)
 
-print("KEEP DISTANCE v7.2 cargado · FIX regreso al ancla (ya no queda clavado dentro del radio) · SUPER DETECCIÓN 360° (invisibles + arriba " .. DETECT.VERT_UP .. " studs + huérfanos) · SUELO DURO (" .. CONTACT.HARD_R .. " studs) · predicción adaptativa · ghost " .. DETECT.HOLD_TIME .. "s · filtro vertical asimétrico (abajo " .. DETECT.VERT_DOWN .. ") · PRE-DETECCIÓN · Air Walk safe.")
+print("KEEP DISTANCE v8.0 cargado · SUELO DURO 3D (" .. CONTACT.HARD_R .. " studs · los que vuelan encima ya no te empujan) · movimiento en studs/s (igual en móvil que en PC) · velocidad estimada a cualquier fps · CAPA DE COMPORTAMIENTO (noclip/teleport/te sigue/veloz/vuela: priorizan e informan, nunca mueven) · recorte espacial · ghost " .. DETECT.HOLD_TIME .. "s + huérfanos · filtro vertical asimétrico (abajo " .. DETECT.VERT_DOWN .. ", arriba progresivo desde " .. DETECT.VERT_UP_SOFT .. ") · PRE-DETECCIÓN · Air Walk safe.")
